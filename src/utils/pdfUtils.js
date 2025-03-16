@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { groupSimilarImages } from './imageUtils';
 
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
@@ -420,6 +421,43 @@ const organizeContent = ({ textContent, viewport, imageItems = [], pageScan = nu
 };
 
 /**
+ * Helper function to safely get an object from PDF.js with retry
+ * @param {Object} page - PDF.js page object
+ * @param {string} imgName - Name of the image object to retrieve
+ * @param {number} maxRetries - Maximum number of retry attempts
+ * @returns {Promise<Object|null>} The image object or null if not found
+ */
+const safeGetImageObject = async (page, imgName, maxRetries = 3) => {
+  let retries = 0;
+  
+  while (retries <= maxRetries) {
+    try {
+      const imgObj = page.objs.get(imgName);
+      return imgObj;
+    } catch (e) {
+      if (e.message?.includes("isn't resolved yet") && retries < maxRetries) {
+        // Wait a short time before retrying - increase wait time with each retry
+        await new Promise(resolve => setTimeout(resolve, 50 * (retries + 1)));
+        retries++;
+        continue;
+      }
+      
+      // Only show in console.debug instead of warning for unresolved objects
+      // This is expected behavior for some complex PDFs
+      if (e.message?.includes("isn't resolved yet")) {
+        console.debug(`Object not yet resolved after ${retries} retries: ${imgName}`);
+      } else {
+        console.warn(`Could not retrieve object ${imgName}: ${e.message}`);
+      }
+      
+      return null;
+    }
+  }
+  
+  return null;
+};
+
+/**
  * Processes a PDF document and extracts text with positioned image placeholders
  * @param {ArrayBuffer|Uint8Array} pdfData - The binary PDF data
  * @param {Object} options - Processing options
@@ -438,20 +476,43 @@ async function processPdfDocument(pdfData, options = {}) {
       totalPages: 0,
       processingTime: 0,
       pages: [],
-      images: []
+      images: [],
+      skippedObjects: [], // Track skipped objects
+      originalImageCount: 0 // Track the original number of images before deduplication
     };
     
     const startTime = performance.now();
     onLog('Loading PDF document...');
     
-    // Load the PDF document
-    const pdf = await pdfjsLib.getDocument({ data }).promise;
+    // Load the PDF document with robust error handling
+    let pdf;
+    try {
+      pdf = await pdfjsLib.getDocument({ 
+        data,
+        disableFontFace: true, // Disable font loading for better compatibility
+        cMapUrl: 'https://unpkg.com/pdfjs-dist@3.4.120/cmaps/',
+        cMapPacked: true,
+      }).promise;
+    } catch (loadError) {
+      console.error('Error loading PDF document:', loadError);
+      return {
+        success: false,
+        error: `Error loading PDF: ${loadError.message}`,
+        pages: [],
+        images: [],
+        totalPages: 0,
+        processingTime: 0
+      };
+    }
+    
     result.totalPages = pdf.numPages;
     
     onLog(`PDF loaded successfully. Pages: ${pdf.numPages}`);
     
     // Process each page
     let globalImageCounter = 0;
+    const allExtractedImages = []; // Store all images before deduplication
+    const pageImageRef = new Map(); // To update references after deduplication
     
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       onProgress(pageNum / pdf.numPages);
@@ -502,131 +563,293 @@ async function processPdfDocument(pdfData, options = {}) {
                         operatorList.fnArray[i] === pdfjsLib.OPS.beginImageData;
         
         if (isImageOp) {
-          const imgName = operatorList.argsArray[i][0];
-          
-          // Skip if we've already processed this image name in the current page
-          if (processedImageNames.has(imgName)) {
-            continue;
-          }
-          
-          processedImageNames.add(imgName);
-          globalImageCounter++;
-          const imgObj = page.objs.get(imgName);
-          
-          if (!imgObj) continue;
-          
-          // Locate image position from transform operations
-          let transform = null;
-          for (let j = i - 1; j >= 0 && j >= i - 15; j--) {
-            if (operatorList.fnArray[j] === pdfjsLib.OPS.transform) {
-              transform = operatorList.argsArray[j];
-              break;
+          try {
+            // Skip if no arguments
+            if (!operatorList.argsArray[i] || !operatorList.argsArray[i][0]) {
+              continue;
             }
-          }
-          
-          // Calculate position
-          let y = 0, x = 0;
-          if (transform) {
-            // Convert PDF coordinates (bottom-up) to top-down coordinates
-            y = viewport.height - transform[5];
-            x = transform[4];
-          }
-          
-          const imageId = `img_${pageNum}_${globalImageCounter}`;
-          const placeholder = `[IMAGE_${globalImageCounter}]`;
-          
-          // Extract the image
-          const extractedImage = await extractImage({
-            imgObj,
-            pageNum,
-            id: imageId,
-            isFullPage: false
-          });
-          
-          if (extractedImage) {
-            // Add to results
-            result.images.push(extractedImage);
             
-            // Add reference to page
-            pageObj.imageReferences.push({
+            const imgName = operatorList.argsArray[i][0];
+            
+            // Skip if we've already processed this image name in the current page
+            if (processedImageNames.has(imgName)) {
+              continue;
+            }
+            
+            processedImageNames.add(imgName);
+            globalImageCounter++;
+            
+            // Safely get the image object with retry
+            const imgObj = await safeGetImageObject(page, imgName, 3);
+            
+            // Skip if no image object could be retrieved
+            if (!imgObj) {
+              // Track skipped objects for diagnostics
+              result.skippedObjects.push({
+                page: pageNum,
+                objectName: imgName,
+                reason: "Object not resolved"
+              });
+              continue;
+            }
+            
+            // Locate image position from transform operations
+            let transform = null;
+            for (let j = i - 1; j >= 0 && j >= i - 15; j--) {
+              if (operatorList.fnArray[j] === pdfjsLib.OPS.transform) {
+                transform = operatorList.argsArray[j];
+                break;
+              }
+            }
+            
+            // Calculate position
+            let y = 0, x = 0;
+            if (transform) {
+              // Convert PDF coordinates (bottom-up) to top-down coordinates
+              y = viewport.height - transform[5];
+              x = transform[4];
+            }
+            
+            const imageId = `img_${pageNum}_${globalImageCounter}`;
+            const placeholder = `[IMAGE_${globalImageCounter}]`;
+            
+            // Extract the image
+            const extractedImage = await extractImage({
+              imgObj,
+              pageNum,
               id: imageId,
-              placeholder,
-              index: result.images.length - 1
+              isFullPage: false
             });
             
-            // Add position info for text placement
-            imageItems.push(createContentItem({
-              type: 'image',
-              id: imageId,
-              x,
-              y,
-              placeholder
-            }));
-            
-            onLog(`Found image ${globalImageCounter} on page ${pageNum} at position (${Math.round(x)}, ${Math.round(y)}) with size ${extractedImage.width}x${extractedImage.height}`);
+            if (extractedImage) {
+              // Add position to the extracted image
+              extractedImage.position = { x, y };
+              
+              // Store extracted image for later deduplication
+              allExtractedImages.push(extractedImage);
+              
+              // Store reference to image for this page
+              pageImageRef.set(imageId, {
+                pageNum,
+                placeholder,
+                x,
+                y,
+                imageItems,
+                pageObj
+              });
+              
+              onLog(`Found image ${globalImageCounter} on page ${pageNum} at position (${Math.round(x)}, ${Math.round(y)}) with size ${extractedImage.width}x${extractedImage.height}`);
+            }
+          } catch (error) {
+            console.debug(`Error processing image operation at index ${i}: ${error.message}`);
+            continue; // Skip this image and continue with the next one
           }
         }
       }
       
       // STEP 2: Render full page as image if needed
       if (analysis.isScanned || (analysis.textElementCount < 10 && analysis.imageCount > 0)) {
-        const pageImageId = `page_${pageNum}`;
-        const pagePlaceholder = `[PAGE_IMAGE_${pageNum}]`;
-        
-        const fullPageImage = await extractImage({
-          page,
-          pageNum,
-          id: pageImageId,
-          isFullPage: true,
-          isScanned: analysis.isScanned
-        });
-        
-        if (fullPageImage) {
-          // Add to results
-          result.images.push(fullPageImage);
+        try {
+          const pageImageId = `page_${pageNum}`;
+          const pagePlaceholder = `[PAGE_IMAGE_${pageNum}]`;
           
-          // Add reference to page
-          pageObj.imageReferences.push({
+          const fullPageImage = await extractImage({
+            page,
+            pageNum,
             id: pageImageId,
-            placeholder: pagePlaceholder,
-            index: result.images.length - 1,
-            isFullPage: true
+            isFullPage: true,
+            isScanned: analysis.isScanned
           });
           
-          // Set page scan for content organization
-          pageScan = {
-            id: pageImageId,
-            placeholder: pagePlaceholder
-          };
-          
-          onLog(`Created full page image for page ${pageNum} (isScanned: ${analysis.isScanned})`);
+          if (fullPageImage) {
+            // Add position (top of page)
+            fullPageImage.position = { x: 0, y: 0 };
+            
+            // Store extracted image for later deduplication
+            allExtractedImages.push(fullPageImage);
+            
+            // Set page scan reference
+            pageScan = {
+              id: pageImageId,
+              placeholder: pagePlaceholder
+            };
+            
+            // Store reference for this page
+            pageImageRef.set(pageImageId, {
+              pageNum,
+              placeholder: pagePlaceholder,
+              x: 0,
+              y: 0,
+              isFullPage: true,
+              pageScan,
+              pageObj
+            });
+            
+            onLog(`Created full page image for page ${pageNum} (isScanned: ${analysis.isScanned})`);
+          }
+        } catch (error) {
+          console.warn(`Error creating full page image for page ${pageNum}: ${error.message}`);
+          // Continue without the full page image
         }
       }
       
-      // STEP 3: Organize content with text and image placeholders
+      // Add page object to results for now (we'll build content after deduplication)
+      result.pages.push(pageObj);
+    }
+    
+    // Store original count before deduplication
+    result.originalImageCount = allExtractedImages.length;
+    onLog(`Found ${allExtractedImages.length} original images before deduplication`);
+    
+    // STEP 3: Group similar images
+    onLog('Analyzing image similarity...');
+    const uniqueImages = await groupSimilarImages(allExtractedImages);
+    
+    // Store final images in result
+    result.images = uniqueImages;
+    
+    // Map original IDs to new combined IDs
+    const idMapping = new Map();
+    
+    for (const image of uniqueImages) {
+      if (image.originalId && image.id !== image.originalId) {
+        // This is a combined image, map all component IDs to this one
+        const componentIds = image.id.split('_AND_');
+        componentIds.forEach(id => {
+          idMapping.set(id, {
+            newId: image.id,
+            index: result.images.indexOf(image)
+          });
+        });
+      } else {
+        // This is a unique image
+        idMapping.set(image.id, {
+          newId: image.id,
+          index: result.images.indexOf(image)
+        });
+      }
+    }
+    
+    // STEP 4: Update all page references and create content
+    // Keep track of image references that have already been added to each page
+    const pageImageTracker = new Map(); // Map of pageNumber -> Set of image IDs already added
+    
+    for (const [originalId, refInfo] of pageImageRef.entries()) {
+      const { pageNum, placeholder, x, y, isFullPage, pageScan, pageObj, imageItems } = refInfo;
+      
+      // Get the new ID and index for this image
+      const imageInfo = idMapping.get(originalId);
+      if (!imageInfo) continue;
+      
+      const { newId, index } = imageInfo;
+      
+      // Check if this image (by newId) has already been added to this page
+      if (!pageImageTracker.has(pageNum)) {
+        pageImageTracker.set(pageNum, new Set());
+      }
+      
+      const pageImages = pageImageTracker.get(pageNum);
+      
+      // If this combined image already exists on this page, skip adding another reference
+      if (pageImages.has(newId)) {
+        continue;
+      }
+      
+      // Mark this image as added to this page
+      pageImages.add(newId);
+      
+      // Add reference to the page
+      pageObj.imageReferences.push({
+        id: newId, // Use new ID (might be combined)
+        placeholder,
+        index,
+        isFullPage: !!isFullPage
+      });
+      
+      // Update page scan if needed
+      if (pageScan) {
+        pageScan.id = newId;
+      }
+      
+      // Add to image items for content organization if not a page scan
+      if (!isFullPage && imageItems) {
+        imageItems.push(createContentItem({
+          type: 'image',
+          id: newId,
+          x,
+          y,
+          placeholder
+        }));
+      }
+    }
+    
+    // STEP 5: Organize content for each page
+    for (const pageObj of result.pages) {
+      const pageNum = pageObj.pageNumber;
+      
+      // Find all image items for this page
+      const imageItems = [];
+      
+      // Find the page scan if any
+      let pageScan = null;
+      
+      for (const ref of pageObj.imageReferences) {
+        if (ref.isFullPage) {
+          // This is a page scan
+          pageScan = {
+            id: ref.id,
+            placeholder: ref.placeholder
+          };
+        } else {
+          // Find the image to get its position
+          const image = result.images[ref.index];
+          if (image && image.position) {
+            imageItems.push(createContentItem({
+              type: 'image',
+              id: ref.id,
+              x: image.position.x,
+              y: image.position.y,
+              placeholder: ref.placeholder
+            }));
+          }
+        }
+      }
+      
+      // Get the viewport and text content objects from the page number
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const viewport = page.getViewport({ scale: 1.0 });
+      
+      // Organize the content
       const content = organizeContent({
         textContent,
         viewport,
         imageItems,
-        pageScan: (analysis.isScanned && pageScan) ? pageScan : null
+        pageScan: (pageObj.isScanned && pageScan) ? pageScan : null
       });
       
+      // Update the page content
       pageObj.content = content;
       
       // Special case: empty page with scan - just use the image placeholder without explanatory text
       if (content.rawText === '' && pageScan) {
         pageObj.content.formattedText = pageScan.placeholder;
       }
-      
-      // Add page to results
-      result.pages.push(pageObj);
+    }
+    
+    // Log deduplication results
+    const savedImages = result.originalImageCount - result.images.length;
+    if (savedImages > 0) {
+      onLog(`Removed ${savedImages} duplicate images (${Math.round(savedImages / result.originalImageCount * 100)}% reduction)`);
+    } else {
+      onLog('No duplicate images found');
     }
     
     // Calculate total processing time
     result.processingTime = performance.now() - startTime;
     result.imageCount = result.images.length;
     
-    onLog(`Processing complete. Found ${result.images.length} images across ${result.totalPages} pages.`);
+    onLog(`Processing complete. Found ${result.images.length} unique images across ${result.totalPages} pages.`);
     onProgress(1);
     
     return result;
