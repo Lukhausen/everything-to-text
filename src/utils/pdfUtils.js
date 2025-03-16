@@ -11,194 +11,318 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
  */
 const analyzePageContent = (operatorList, textContent) => {
   let result = {
-    hasSignificantGraphics: false,
-    hasScannedContent: false,
-    hasFewTextItems: textContent.items.length < 5,
-    imageOperations: 0,
-    graphicsOperations: 0,
-    textOperations: 0,
-    totalOperations: operatorList.fnArray.length
+    isScanned: false,
+    hasImages: false,
+    imageCount: 0,
+    textElementCount: textContent.items.length,
+    isEmpty: textContent.items.length === 0,
+    uniqueImageOperations: new Set() // Track unique image operations
   };
   
-  // Count different operation types
+  // Count operations by type
+  let imageOps = 0;
+  let graphicsOps = 0;
+  let textOps = 0;
+  
+  // Track unique image names to get accurate count
+  const uniqueImageNames = new Set();
+  
   for (let i = 0; i < operatorList.fnArray.length; i++) {
     const op = operatorList.fnArray[i];
     
     // Image operations
     if (op === pdfjsLib.OPS.paintImageXObject || 
         op === pdfjsLib.OPS.paintImageMaskXObject || 
-        op === pdfjsLib.OPS.paintJpegXObject) {
-      result.imageOperations++;
+        op === pdfjsLib.OPS.paintJpegXObject ||
+        op === pdfjsLib.OPS.constructImage ||
+        op === pdfjsLib.OPS.beginImageData) {
+      
+      // Add to counter for all image-related operations
+      imageOps++;
+      
+      // For image operations that reference an image name, track them
+      if (operatorList.argsArray[i] && operatorList.argsArray[i][0]) {
+        const imgName = operatorList.argsArray[i][0];
+        uniqueImageNames.add(imgName);
+      }
+      
+      // Track the operation itself
+      result.uniqueImageOperations.add(op);
     }
-    // Path and drawing operations that likely represent graphics
+    // Graphics operations
     else if (op === pdfjsLib.OPS.fill || 
             op === pdfjsLib.OPS.stroke || 
             op === pdfjsLib.OPS.fillStroke || 
             op === pdfjsLib.OPS.closePath || 
             op === pdfjsLib.OPS.curveTo ||
             op === pdfjsLib.OPS.rectangle) {
-      result.graphicsOperations++;
+      graphicsOps++;
     }
     // Text operations
     else if (op === pdfjsLib.OPS.showText || 
             op === pdfjsLib.OPS.showSpacedText ||
             op === pdfjsLib.OPS.nextLine) {
-      result.textOperations++;
+      textOps++;
     }
   }
   
-  // Calculate percentages
-  const nonTextPercentage = (result.imageOperations + result.graphicsOperations) / result.totalOperations;
+  // Calculate metrics
+  const totalOps = operatorList.fnArray.length;
+  const nonTextPercentage = (imageOps + graphicsOps) / Math.max(1, totalOps);
+  const imageToTextRatio = imageOps / Math.max(1, textOps);
   
-  // Determine if page has significant graphics/images
-  result.hasSignificantGraphics = (nonTextPercentage > 0.2) || (result.imageOperations > 0);
+  // Set flags based on analysis
+  result.hasImages = imageOps > 0;
+  result.imageCount = uniqueImageNames.size > 0 ? uniqueImageNames.size : imageOps;
   
-  // Determine if page might be scanned 
-  // (few text elements but many operations, or very high graphics percentage)
-  result.hasScannedContent = (result.hasFewTextItems && result.totalOperations > 100) || 
-                            (nonTextPercentage > 0.7);
+  // Determine if page is scanned
+  result.isScanned = 
+    (result.isEmpty && totalOps > 50) ||               // Empty page with operations
+    (result.textElementCount < 10 && totalOps > 80) || // Few text items with many operations
+    (nonTextPercentage > 0.6) ||                       // Mostly non-text content
+    (imageOps === 1 && textOps < 5 && totalOps > 40);  // Single large image with minimal text
   
   return result;
 };
 
 /**
- * Extracts a page as an image
- * @param {Object} page - PDF.js page object
- * @param {number} pageNum - Page number
- * @param {Object} analysis - Analysis results from analyzePageContent
- * @returns {Promise<Object>} The extracted image object
+ * Extracts and renders an image from a PDF page or object
+ * @param {Object} params - Parameters for extraction
+ * @returns {Promise<Object>} The extracted image data
  */
-const extractPageAsImage = async (page, pageNum, analysis) => {
-  try {
-    // Choose appropriate scale based on page content
-    const scale = analysis?.hasScannedContent ? 2.0 : 1.5;
-    
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    // Render the page to canvas
-    await page.render({
-      canvasContext: ctx,
-      viewport: viewport
-    }).promise;
-    
-    // Return the page as an image
-    return {
-      id: `page_${pageNum}`,
-      placeholder: `[PAGE_IMAGE_${pageNum}]`,
-      dataURL: canvas.toDataURL('image/png'),
-      width: viewport.width,
-      height: viewport.height,
-      isFullPage: true,
-      isScanned: analysis?.hasScannedContent || false
-    };
-  } catch (e) {
-    console.error(`Error rendering page ${pageNum} as image:`, e);
-    return null;
-  }
-};
-
-/**
- * Extracts an image from a PDF object
- * @param {Object} img - PDF.js image object
- * @param {number} id - Image identifier
- * @param {number} pageNum - Page number
- * @param {string} placeholder - Text placeholder for the image
- * @returns {Promise<Object>} The extracted image object
- */
-const extractImage = async (img, id, pageNum, placeholder) => {
+const extractImage = async ({ page, imgObj, pageNum, id, isFullPage = false, isScanned = false }) => {
   try {
     const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
+    let ctx, viewport, width, height;
     
-    // Handle different image formats
-    if (img.bitmap) {
-      ctx.drawImage(img.bitmap, 0, 0);
-    } else if (img.data) {
-      // Ensure we have the right data format
-      if (img.data instanceof Uint8ClampedArray || 
-          img.data instanceof Uint8Array) {
-        const imageData = ctx.createImageData(img.width, img.height);
-        imageData.data.set(img.data);
-        ctx.putImageData(imageData, 0, 0);
-      } else {
+    // Different handling for full page vs embedded image
+    if (isFullPage) {
+      // Full page rendering
+      const scale = isScanned ? 2.0 : 1.5;  // Higher resolution for scanned pages
+      viewport = page.getViewport({ scale });
+      
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      ctx = canvas.getContext('2d');
+      
+      // White background
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Render page to canvas
+      await page.render({
+        canvasContext: ctx,
+        viewport: viewport
+      }).promise;
+      
+      width = viewport.width;
+      height = viewport.height;
+    } else {
+      // More inclusive size threshold for embedded images (reduced from 10x10)
+      if (imgObj.width < 5 || imgObj.height < 5) {
         return null;
       }
-    } else {
+      
+      // Embedded image
+      canvas.width = imgObj.width;
+      canvas.height = imgObj.height;
+      ctx = canvas.getContext('2d');
+      
+      // White background
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      let extracted = false;
+      
+      // Try different methods of extraction - improved extraction logic
+      if (imgObj.bitmap) {
+        ctx.drawImage(imgObj.bitmap, 0, 0);
+        extracted = true;
+      } else if (imgObj.data) {
+        // Handle different data types more flexibly
+        if (imgObj.data instanceof Uint8ClampedArray || imgObj.data instanceof Uint8Array) {
+          const imageData = ctx.createImageData(imgObj.width, imgObj.height);
+          imageData.data.set(imgObj.data);
+          ctx.putImageData(imageData, 0, 0);
+          extracted = true;
+        } else if (Array.isArray(imgObj.data)) {
+          // Handle array data
+          const imageData = ctx.createImageData(imgObj.width, imgObj.height);
+          for (let i = 0; i < Math.min(imgObj.data.length, imageData.data.length); i++) {
+            imageData.data[i] = imgObj.data[i];
+          }
+          ctx.putImageData(imageData, 0, 0);
+          extracted = true;
+        }
+      } else if (imgObj.getImageData) {
+        try {
+          const imageData = await imgObj.getImageData();
+          ctx.putImageData(imageData, 0, 0);
+          extracted = true;
+        } catch (e) {
+          console.warn(`Error getting image data: ${e.message}`);
+        }
+      }
+      
+      // Alternative extraction methods if standard methods fail
+      if (!extracted && imgObj.image) {
+        try {
+          ctx.drawImage(imgObj.image, 0, 0);
+          extracted = true;
+        } catch (e) {
+          console.warn(`Error drawing image: ${e.message}`);
+        }
+      }
+      
+      if (!extracted) {
+        return null;
+      }
+      
+      width = imgObj.width;
+      height = imgObj.height;
+    }
+    
+    // Check if image has actual content (not just white)
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let hasContent = false;
+    let nonWhitePixels = 0;
+    
+    // More thorough sampling to check for non-white areas
+    for (let i = 0; i < imageData.data.length; i += 4) {
+      const r = imageData.data[i];
+      const g = imageData.data[i + 1];
+      const b = imageData.data[i + 2];
+      const a = imageData.data[i + 3];
+      
+      // More lenient white threshold and consider alpha
+      if ((r < 245 || g < 245 || b < 245) && a > 10) {
+        nonWhitePixels++;
+        if (nonWhitePixels > canvas.width * canvas.height * 0.002) { // Only need 0.2% non-white
+          hasContent = true;
+          break;
+        }
+      }
+    }
+    
+    // Additional check for very small images
+    if (!hasContent && canvas.width < 30 && canvas.height < 30) {
+      // For tiny images, check more thoroughly
+      hasContent = nonWhitePixels > 5; // Just need a few non-white pixels for small images
+    }
+    
+    if (!hasContent) {
       return null;
     }
     
+    // Build image object
     return {
       id,
-      placeholder,
-      dataURL: canvas.toDataURL('image/png'),
-      width: img.width,
-      height: img.height
+      pageNumber: pageNum,
+      width,
+      height,
+      isFullPage,
+      isScanned,
+      dataURL: canvas.toDataURL('image/png')
     };
   } catch (e) {
-    console.error(`Error extracting image ${id} from page ${pageNum}:`, e);
+    console.error(`Error extracting image: ${e.message}`);
     return null;
   }
 };
 
 /**
- * Extracts organized text with proper line breaks from PDF content and inserts image placeholders
- * @param {Object} textContent - The text content from PDF.js
- * @param {Object} viewport - The viewport from PDF.js
- * @param {Array} imageItems - Array of image items with positioning data
- * @returns {string} Formatted text with line breaks and image placeholders
+ * Creates a position-aware item from text or image
+ * @param {Object} options - Item properties
+ * @returns {Object} Position-aware content item
  */
-const extractFormattedTextWithPlaceholders = (textContent, viewport, imageItems) => {
-  if (!textContent.items.length) return '';
-  
-  // Sort all text and image items by position (y first, then x)
-  const textItems = textContent.items.map(item => {
-    const y = viewport.height - item.transform[5];
-    return {
-      type: 'text',
-      y,
-      x: item.transform[4],
-      text: item.str
+const createContentItem = ({ type, text = '', id = null, x = 0, y = 0, placeholder = '' }) => {
+  return { type, text, id, x, y, placeholder };
+};
+
+/**
+ * Organizes text and image items by their positions and creates formatted text with placeholders
+ * @param {Object} params - Processing parameters
+ * @returns {Object} Organized text content with positioned placeholders
+ */
+const organizeContent = ({ textContent, viewport, imageItems = [], pageScan = null }) => {
+  // If no text and no images, return empty result
+  if (!textContent.items.length && !imageItems.length && !pageScan) {
+    return { 
+      rawText: '', 
+      formattedText: '' 
     };
+  }
+  
+  // If we only have a page scan and no text, just return the scan placeholder
+  if (!textContent.items.length && imageItems.length === 0 && pageScan) {
+    return {
+      rawText: '',
+      formattedText: pageScan.placeholder
+    };
+  }
+  
+  // Convert text items to position-aware items
+  const textItems = textContent.items.map(item => {
+    // PDF coordinates start from bottom, convert to top-down
+    const y = viewport.height - item.transform[5];
+    
+    return createContentItem({
+      type: 'text',
+      text: item.str,
+      x: item.transform[4],
+      y
+    });
   });
   
-  // Create combined list of text and images
-  const combinedItems = [...textItems, ...imageItems].sort((a, b) => {
-    // First sort by y position
-    const yDiff = a.y - b.y;
-    if (Math.abs(yDiff) > 5) return yDiff;
-    
-    // If y positions are very close, sort by x position for text items
-    if (a.type === 'text' && b.type === 'text') {
-      return a.x - b.x;
+  // Combine all items (text + images)
+  let allItems = [...textItems, ...imageItems];
+  
+  // If there's a full page scan and it's important, add it at the beginning
+  if (pageScan) {
+    allItems.unshift(createContentItem({
+      type: 'image',
+      id: pageScan.id,
+      placeholder: pageScan.placeholder,
+      y: 0,
+      x: 0
+    }));
+  }
+  
+  // No content case
+  if (allItems.length === 0) {
+    return { 
+      rawText: '', 
+      formattedText: '' 
+    };
+  }
+  
+  // Sort by position (y first, then x)
+  allItems.sort((a, b) => {
+    // Group items by y position with some tolerance
+    if (Math.abs(a.y - b.y) > 5) {
+      return a.y - b.y;
     }
-    
-    // For images at similar y positions, preserve their position
-    return 0;
+    // If on same line, sort by x position
+    return a.x - b.x;
   });
   
-  // Group items by approximate line (y position)
-  const yTolerance = 3;
+  // Group by lines with improved approach for handling multiple images
+  const yTolerance = 5; // Slightly increased tolerance
+  const lines = [];
   let currentLine = [];
   let currentY = null;
-  const lines = [];
   
-  combinedItems.forEach(item => {
+  // First pass: Group by y position with tolerance
+  allItems.forEach(item => {
     const roundedY = Math.round(item.y / yTolerance) * yTolerance;
     
     if (currentY === null) {
       currentY = roundedY;
     } else if (Math.abs(roundedY - currentY) > yTolerance) {
       // New line
-      lines.push(currentLine);
+      if (currentLine.length > 0) {
+        lines.push([...currentLine]);
+      }
       currentLine = [];
       currentY = roundedY;
     }
@@ -211,47 +335,110 @@ const extractFormattedTextWithPlaceholders = (textContent, viewport, imageItems)
     lines.push(currentLine);
   }
   
-  // Build the text with proper line breaks and image placeholders
-  let formattedText = '';
-  for (const line of lines) {
-    // Sort items on this line by x position
-    line.sort((a, b) => a.x - b.x);
+  // Second pass: Ensure images that are horizontally close but on different lines
+  // are properly placed (especially in multi-column layouts)
+  for (let i = 0; i < lines.length; i++) {
+    // Check if this line has an image
+    const hasImage = lines[i].some(item => item.type === 'image');
     
-    for (const item of line) {
-      if (item.type === 'text') {
-        formattedText += item.text + ' ';
-      } else if (item.type === 'image') {
-        formattedText += ` ${item.placeholder} `;
+    if (hasImage && i < lines.length - 1) {
+      // Look ahead for nearby images in subsequent lines
+      for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+        const nearbyImages = lines[j].filter(item => item.type === 'image');
+        
+        if (nearbyImages.length > 0) {
+          // For each nearby image, decide if it should move up to the current line
+          for (let k = 0; k < nearbyImages.length; k++) {
+            const img = nearbyImages[k];
+            const imgIndex = lines[j].indexOf(img);
+            
+            // If the image is close in y-position or has no text around it, move it up
+            const isTextNearby = lines[j].some(item => 
+              item.type === 'text' && 
+              Math.abs(item.x - img.x) < 50
+            );
+            
+            // Remove from next line, add to current line if appropriate
+            if (!isTextNearby || Math.abs(img.y - lines[i][0].y) < 20) {
+              if (imgIndex !== -1) {
+                // Remove from original line
+                lines[j].splice(imgIndex, 1);
+                // Add to current line
+                lines[i].push(img);
+                // Ensure current line is sorted
+                lines[i].sort((a, b) => a.x - b.x);
+              }
+            }
+          }
+        }
       }
     }
-    
-    formattedText += '\n';
   }
   
-  return formattedText;
+  // Sort each line by x position
+  lines.forEach(line => line.sort((a, b) => a.x - b.x));
+  
+  // Remove empty lines after reorganization
+  const nonEmptyLines = lines.filter(line => line.length > 0);
+  
+  // Build raw text (just the text content)
+  let rawText = '';
+  const textOnlyItems = textItems.sort((a, b) => a.y - b.y);
+  
+  for (let i = 0; i < textOnlyItems.length; i++) {
+    rawText += textOnlyItems[i].text;
+    if (i < textOnlyItems.length - 1) {
+      // If next item is on a new line, add a line break
+      if (Math.abs(textOnlyItems[i].y - textOnlyItems[i+1].y) > 5) {
+        rawText += '\n';
+      } else {
+        rawText += ' ';
+      }
+    }
+  }
+  
+  // Build formatted text (with image placeholders)
+  let formattedText = '';
+  
+  for (const line of nonEmptyLines) {
+    let lineText = '';
+    for (const item of line) {
+      if (item.type === 'text') {
+        lineText += item.text + ' ';
+      } else if (item.type === 'image' && item.placeholder) {
+        // Add extra space around image placeholders for better visibility
+        lineText += ` ${item.placeholder} `;
+      }
+    }
+    formattedText += lineText.trim() + '\n';
+  }
+  
+  return {
+    rawText: rawText.trim(),
+    formattedText: formattedText.trim()
+  };
 };
 
 /**
- * Processes a PDF file and extracts all content including text, images, and scanned pages
- * @param {ArrayBuffer|Uint8Array} pdfData - The PDF data as ArrayBuffer or Uint8Array
+ * Processes a PDF document and extracts text with positioned image placeholders
+ * @param {ArrayBuffer|Uint8Array} pdfData - The binary PDF data
  * @param {Object} options - Processing options
- * @param {Function} options.onProgress - Callback for progress updates
- * @param {Function} options.onLog - Callback for logging
- * @returns {Promise<Object>} Comprehensive PDF content object
+ * @returns {Promise<Object>} Processed PDF content
  */
-export async function processPdfDocument(pdfData, options = {}) {
+async function processPdfDocument(pdfData, options = {}) {
   const { onProgress = () => {}, onLog = () => {} } = options;
   
   try {
-    // Ensure we have Uint8Array
+    // Convert to appropriate format
     const data = pdfData instanceof ArrayBuffer ? new Uint8Array(pdfData) : pdfData;
     
-    // Result object with simplified structure
+    // Create result structure
     const result = {
       success: true,
       totalPages: 0,
-      pages: [],     // Array of page objects
-      processingTime: 0
+      processingTime: 0,
+      pages: [],
+      images: []
     };
     
     const startTime = performance.now();
@@ -264,7 +451,7 @@ export async function processPdfDocument(pdfData, options = {}) {
     onLog(`PDF loaded successfully. Pages: ${pdf.numPages}`);
     
     // Process each page
-    let imageCounter = 0;
+    let globalImageCounter = 0;
     
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       onProgress(pageNum / pdf.numPages);
@@ -272,140 +459,184 @@ export async function processPdfDocument(pdfData, options = {}) {
       
       const page = await pdf.getPage(pageNum);
       
-      // Create simplified page object
+      // Initialize page object with logical structure
       const pageObj = {
         pageNumber: pageNum,
-        hasImages: false,
         isScanned: false,
-        images: [],
-        text: '',
-        scan: null
+        content: {
+          rawText: '',    // Plain text without placeholders
+          formattedText: '' // Text with image placeholders
+        },
+        imageReferences: [] // References to images on this page
       };
       
-      // Extract text content with positions
+      // Get text content and viewport
       const textContent = await page.getTextContent();
-      const hasText = textContent.items.length > 0;
-      
-      // Get the viewport for positioning information
       const viewport = page.getViewport({ scale: 1.0 });
       
-      // Extract images and their positions
+      // Get operator list for image detection
       const operatorList = await page.getOperatorList();
       
-      // Analyze the page content
-      const contentAnalysis = analyzePageContent(operatorList, textContent);
+      // Analyze content to detect page type
+      const analysis = analyzePageContent(operatorList, textContent);
+      pageObj.isScanned = analysis.isScanned;
       
-      // Image placeholders to insert in text
+      // Items for image placeholders to position in text
       const imageItems = [];
+      let pageScan = null;
       
-      // Process embedded images in the page
+      onLog(`Page ${pageNum} analysis: ${analysis.imageCount} images, ${analysis.textElementCount} text elements, isScanned: ${analysis.isScanned}`);
+      if (analysis.uniqueImageOperations.size > 0) {
+        onLog(`Image operation types: ${Array.from(analysis.uniqueImageOperations).join(', ')}`);
+      }
+      
+      // STEP 1: Extract embedded images
+      // Track processed image names to avoid duplicates
+      const processedImageNames = new Set();
+      
       for (let i = 0; i < operatorList.fnArray.length; i++) {
-        // Check for different types of image operations
         const isImageOp = operatorList.fnArray[i] === pdfjsLib.OPS.paintImageXObject ||
                         operatorList.fnArray[i] === pdfjsLib.OPS.paintImageMaskXObject ||
-                        operatorList.fnArray[i] === pdfjsLib.OPS.paintJpegXObject;
+                        operatorList.fnArray[i] === pdfjsLib.OPS.paintJpegXObject ||
+                        operatorList.fnArray[i] === pdfjsLib.OPS.constructImage ||
+                        operatorList.fnArray[i] === pdfjsLib.OPS.beginImageData;
         
         if (isImageOp) {
-          imageCounter++;
           const imgName = operatorList.argsArray[i][0];
           
-          // Get image transform (position) from nearby transform operations
+          // Skip if we've already processed this image name in the current page
+          if (processedImageNames.has(imgName)) {
+            continue;
+          }
+          
+          processedImageNames.add(imgName);
+          globalImageCounter++;
+          const imgObj = page.objs.get(imgName);
+          
+          if (!imgObj) continue;
+          
+          // Locate image position from transform operations
           let transform = null;
-          for (let j = i - 1; j >= 0 && j >= i - 10; j--) {
+          for (let j = i - 1; j >= 0 && j >= i - 15; j--) {
             if (operatorList.fnArray[j] === pdfjsLib.OPS.transform) {
               transform = operatorList.argsArray[j];
               break;
             }
           }
           
-          // If transform found, extract the y position
-          let yPosition = 0;
-          let xPosition = 0;
+          // Calculate position
+          let y = 0, x = 0;
           if (transform) {
-            // PDF coordinates start from bottom, so invert y
-            yPosition = viewport.height - transform[5];
-            xPosition = transform[4];
+            // Convert PDF coordinates (bottom-up) to top-down coordinates
+            y = viewport.height - transform[5];
+            x = transform[4];
           }
           
-          const placeholderName = `[IMAGE_${imageCounter}]`;
+          const imageId = `img_${pageNum}_${globalImageCounter}`;
+          const placeholder = `[IMAGE_${globalImageCounter}]`;
           
-          // Add to image items array for text insertion
-          imageItems.push({
-            type: 'image',
-            y: yPosition,
-            x: xPosition,
-            placeholder: placeholderName,
-            id: imageCounter
+          // Extract the image
+          const extractedImage = await extractImage({
+            imgObj,
+            pageNum,
+            id: imageId,
+            isFullPage: false
           });
           
-          // Extract image
-          const img = page.objs.get(imgName);
-          if (img) {
-            const extractedImage = await extractImage(img, imageCounter, pageNum, placeholderName);
-            if (extractedImage) {
-              pageObj.hasImages = true;
-              pageObj.images.push(extractedImage);
-            }
-          }
-        }
-      }
-      
-      // Decide whether to render full page as image based on content analysis
-      const shouldRenderFullPage = 
-        contentAnalysis.hasSignificantGraphics || 
-        contentAnalysis.hasScannedContent ||
-        (contentAnalysis.hasFewTextItems && contentAnalysis.totalOperations > 50);
-      
-      // If needed, render the whole page as an image
-      if (shouldRenderFullPage) {
-        const pageImage = await extractPageAsImage(page, pageNum, contentAnalysis);
-        if (pageImage) {
-          pageObj.isScanned = contentAnalysis.hasScannedContent;
-          pageObj.scan = pageImage;
-          
-          // If this is a scanned page, add a placeholder at the beginning
-          if (pageObj.isScanned) {
-            imageItems.unshift({
-              type: 'image',
-              y: 0, // Put at the top of the text flow
-              x: 0,
-              placeholder: pageImage.placeholder,
-              id: pageImage.id
+          if (extractedImage) {
+            // Add to results
+            result.images.push(extractedImage);
+            
+            // Add reference to page
+            pageObj.imageReferences.push({
+              id: imageId,
+              placeholder,
+              index: result.images.length - 1
             });
+            
+            // Add position info for text placement
+            imageItems.push(createContentItem({
+              type: 'image',
+              id: imageId,
+              x,
+              y,
+              placeholder
+            }));
+            
+            onLog(`Found image ${globalImageCounter} on page ${pageNum} at position (${Math.round(x)}, ${Math.round(y)}) with size ${extractedImage.width}x${extractedImage.height}`);
           }
         }
       }
       
-      // Handle text extraction with properly positioned image placeholders
-      if (hasText) {
-        pageObj.text = extractFormattedTextWithPlaceholders(textContent, viewport, imageItems);
-      } else if (pageObj.isScanned) {
-        pageObj.text = `${pageObj.scan.placeholder}\n[SCANNED PAGE - This page appears to be a scanned image with no extractable text]`;
+      // STEP 2: Render full page as image if needed
+      if (analysis.isScanned || (analysis.textElementCount < 10 && analysis.imageCount > 0)) {
+        const pageImageId = `page_${pageNum}`;
+        const pagePlaceholder = `[PAGE_IMAGE_${pageNum}]`;
+        
+        const fullPageImage = await extractImage({
+          page,
+          pageNum,
+          id: pageImageId,
+          isFullPage: true,
+          isScanned: analysis.isScanned
+        });
+        
+        if (fullPageImage) {
+          // Add to results
+          result.images.push(fullPageImage);
+          
+          // Add reference to page
+          pageObj.imageReferences.push({
+            id: pageImageId,
+            placeholder: pagePlaceholder,
+            index: result.images.length - 1,
+            isFullPage: true
+          });
+          
+          // Set page scan for content organization
+          pageScan = {
+            id: pageImageId,
+            placeholder: pagePlaceholder
+          };
+          
+          onLog(`Created full page image for page ${pageNum} (isScanned: ${analysis.isScanned})`);
+        }
       }
       
-      // Add the page to results
+      // STEP 3: Organize content with text and image placeholders
+      const content = organizeContent({
+        textContent,
+        viewport,
+        imageItems,
+        pageScan: (analysis.isScanned && pageScan) ? pageScan : null
+      });
+      
+      pageObj.content = content;
+      
+      // Special case: empty page with scan - just use the image placeholder without explanatory text
+      if (content.rawText === '' && pageScan) {
+        pageObj.content.formattedText = pageScan.placeholder;
+      }
+      
+      // Add page to results
       result.pages.push(pageObj);
     }
     
-    // Calculate total number of images across all pages
-    const totalImages = result.pages.reduce((count, page) => {
-      return count + page.images.length + (page.scan ? 1 : 0);
-    }, 0);
-    
-    // Update processing time
+    // Calculate total processing time
     result.processingTime = performance.now() - startTime;
+    result.imageCount = result.images.length;
     
-    onLog(`Processing complete. Found ${totalImages} images across ${result.totalPages} pages.`);
+    onLog(`Processing complete. Found ${result.images.length} images across ${result.totalPages} pages.`);
     onProgress(1);
     
     return result;
-    
   } catch (error) {
     console.error('Error processing PDF:', error);
     return {
       success: false,
       error: error.message || 'Unknown error',
       pages: [],
+      images: [],
       totalPages: 0,
       processingTime: 0
     };
@@ -413,33 +644,29 @@ export async function processPdfDocument(pdfData, options = {}) {
 }
 
 /**
- * Extracts a comprehensive text representation of the PDF content
+ * Generates a text representation of the PDF content
  * @param {Object} pdfResult - Result from processPdfDocument
- * @returns {string} Human-readable text representation
+ * @returns {string} Text representation with image placeholders
  */
-export function generateTextRepresentation(pdfResult) {
+function generateTextRepresentation(pdfResult) {
   if (!pdfResult.success || !pdfResult.pages.length) {
     return 'Failed to process PDF or PDF contains no pages.';
   }
   
-  let fullText = '';
-  
-  pdfResult.pages.forEach(page => {
-    fullText += `--- PAGE ${page.pageNumber} ---\n\n`;
+  return pdfResult.pages.map(page => {
+    const header = `--- PAGE ${page.pageNumber} ---\n\n`;
+    const content = page.content.formattedText;
     
-    if (page.isScanned && !page.text) {
-      // Scanned page with no text
-      fullText += `${page.scan.placeholder}\n[SCANNED PAGE - This page appears to be a scanned image with no extractable text]\n\n`;
-    } else {
-      // The text already includes properly positioned image placeholders
-      fullText += page.text + '\n\n';
+    // If content is just a placeholder without any additional text, don't add extra newlines
+    if (content.startsWith('[PAGE_IMAGE_') && !content.includes('\n')) {
+      return header + content + '\n\n';
     }
-  });
-  
-  return fullText;
+    
+    return header + content + '\n\n';
+  }).join('');
 }
 
-export default {
+export {
   processPdfDocument,
   generateTextRepresentation
 }; 
