@@ -1,368 +1,551 @@
-import { useState, useCallback } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import { useState, useEffect } from 'react';
+import Stepper from './components/Stepper';
 import FileUploader from './components/FileUploader';
-import ApiKeyInput from './components/ApiKeyInput';
-import ProcessingProgress from './components/ProcessingProgress';
 import ImageGrid from './components/ImageGrid';
-import TextOutput from './components/TextOutput';
+import ProgressBar from './components/ProgressBar';
+import Button from './components/Button';
+import TextResult from './components/TextResult';
+import APIKeyInput from './components/ApiKeyInput';
+import AdvancedSettings from './components/AdvancedSettings';
 import { processPdfDocument } from './utils/pdfUtils';
-import { processBatchImages } from './utils/batchImageAnalysisUtils';
+import { processBatchImages, extractTextFromBatchResults } from './utils/batchImageAnalysisUtils';
 import { createTextReplacement } from './utils/textReplacementUtils';
+import './styles/global.css';
+import './App.css';
 
-// Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+// More detailed steps with sub-steps for processing
+const STEPS = [
+  { name: 'Upload' },
+  { name: 'Extract Graphics' },
+  { name: 'Analyze Graphics' },
+  { name: 'Result' }
+];
+
+// Default advanced settings for image processing
+const DEFAULT_ADVANCED_SETTINGS = {
+  processing: {
+    maxConcurrentRequests: 100,  // Process up to 100 images simultaneously
+    maxRefusalRetries: 3,
+    temperature: 0.7,
+    model: "gpt-4o-mini",
+  }
+};
 
 function App() {
-  // State management
+  // Application state
+  const [currentStep, setCurrentStep] = useState(1);
+  const [maxCompletedStep, setMaxCompletedStep] = useState(1); // Track furthest step reached
   const [apiKey, setApiKey] = useState('');
-  const [currentStep, setCurrentStep] = useState('upload'); // 'upload', 'processing', 'processing-analysis', 'analysis', 'results'
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [pdfData, setPdfData] = useState(null);
-  const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 });
-  const [logs, setLogs] = useState([]);
-  const [analysisResults, setAnalysisResults] = useState([]);
-  const [analysisProgress, setAnalysisProgress] = useState({ processedCount: 0, totalImages: 0, errorCount: 0 });
-  const [textReplacementData, setTextReplacementData] = useState(null);
-  const [isGeneratingText, setIsGeneratingText] = useState(false);
+  const [extractedImages, setExtractedImages] = useState([]);
+  const [processedImageIds, setProcessedImageIds] = useState([]);
+  const [refusedImageIds, setRefusedImageIds] = useState([]);
+  const [extractedText, setExtractedText] = useState('');
+  const [error, setError] = useState(null);
+  const [progressStage, setProgressStage] = useState(''); // To show which processing stage we're in
+  const [currentPage, setCurrentPage] = useState(0); // Current page being processed
+  const [totalPages, setTotalPages] = useState(0); // Total pages in the PDF
+  const [advancedSettings, setAdvancedSettings] = useState(DEFAULT_ADVANCED_SETTINGS); // Advanced settings state
   
-  // Handler for API key changes
-  const handleApiKeyChange = (key) => {
-    setApiKey(key);
-    
-    // If we're in the analysis step waiting for an API key, and now we have one,
-    // automatically start processing
-    if (currentStep === 'analysis' && key && pdfData?.images?.length > 0) {
-      processBatchImagesHandler(pdfData);
+  // Effect to update maxCompletedStep whenever currentStep advances
+  useEffect(() => {
+    if (currentStep > maxCompletedStep) {
+      setMaxCompletedStep(currentStep);
     }
-  };
+  }, [currentStep, maxCompletedStep]);
   
-  // Handler for file upload
-  const handleFileUpload = useCallback(async (file) => {
-    setCurrentStep('processing');
-    setPdfData(null);
-    setProcessingProgress({ current: 0, total: 0 });
-    setLogs(['Starting PDF processing...']);
-    setAnalysisResults([]);
-    setTextReplacementData(null);
+  // Store API key in localStorage
+  useEffect(() => {
+    const storedApiKey = localStorage.getItem('openai_api_key');
+    if (storedApiKey) {
+      setApiKey(storedApiKey);
+    }
     
-    try {
-      // Read file as ArrayBuffer
-      const data = await file.arrayBuffer();
-      
-      // Process the PDF
-      const result = await processPdfDocument(new Uint8Array(data), {
-        onProgress: (progress) => {
-          if (progress > 0 && Math.floor(progress * 100) % 5 === 0) {
-            setProcessingProgress(prevState => {
-              if (prevState.total > 0) {
-                return {
-                  ...prevState,
-                  current: Math.ceil(progress * prevState.total)
-                };
-              }
-              return prevState;
-            });
-          }
-        },
-        onLog: (message) => {
-          setLogs(prev => [...prev, message]);
-          
-          // Try to extract progress information from the log message
-          if (message.includes('Processing page')) {
-            const match = message.match(/Processing page (\d+)\/(\d+)/);
-            if (match && match.length === 3) {
-              const current = parseInt(match[1], 10);
-              const total = parseInt(match[2], 10);
-              setProcessingProgress({ current, total });
-            }
-          }
-        }
-      });
-      
-      setPdfData(result);
-      
-      // If PDF has images
-      if (result.images?.length > 0) {
-        if (apiKey) {
-          // If we have an API key, start analyzing immediately
-          setCurrentStep('processing-analysis');
-          processBatchImagesHandler(result);
-        } else {
-          // No API key, move to analysis step to prompt for it
-          setCurrentStep('analysis');
-        }
-      } else {
-        // No images to analyze, skip to results
-        setCurrentStep('results');
-        generateTextReplacement(result, []);
+    // Also load saved settings if available
+    const storedSettings = localStorage.getItem('advanced_settings');
+    if (storedSettings) {
+      try {
+        const parsedSettings = JSON.parse(storedSettings);
+        setAdvancedSettings(parsedSettings);
+      } catch (e) {
+        console.error('Failed to parse stored settings:', e);
       }
-    } catch (error) {
-      console.error('Error processing PDF:', error);
-      setLogs(prev => [...prev, `Error: ${error.message}`]);
-      alert(`Error processing PDF: ${error.message}`);
-      setCurrentStep('upload');
-    }
-  }, [apiKey]);
-  
-  // Handler for batch image processing
-  const processBatchImagesHandler = useCallback(async (pdfDataToProcess = null) => {
-    const dataToUse = pdfDataToProcess || pdfData;
-    
-    if (!dataToUse || !dataToUse.images || dataToUse.images.length === 0) {
-      alert('No images available to analyze.');
-      return;
-    }
-    
-    if (!apiKey) {
-      alert('Please enter your OpenAI API key.');
-      return;
-    }
-    
-    try {
-      // Set to processing-analysis step if not already there
-      if (currentStep !== 'processing-analysis') {
-        setCurrentStep('processing-analysis');
-      }
-      
-      setAnalysisProgress({
-        processedCount: 0,
-        totalImages: dataToUse.images.length,
-        errorCount: 0
-      });
-      setAnalysisResults([]);
-      
-      // Process batch images
-      await processBatchImages(dataToUse, apiKey, {
-        maxConcurrentRequests: 100,
-        maxRefusalRetries: 3,
-        temperature: 0.7,
-        maxTokens: 1000
-      }, {
-        onProgress: (status) => {
-          setAnalysisProgress(status);
-        },
-        onImageProcessed: (result, updatedResults) => {
-          setAnalysisResults(updatedResults);
-        },
-        onComplete: (results, status) => {
-          setAnalysisResults(results);
-          setAnalysisProgress(status);
-          
-          // Move to results step
-          setCurrentStep('results');
-          
-          // Generate text replacement
-          generateTextReplacement(dataToUse, results);
-        }
-      });
-    } catch (error) {
-      console.error('Error analyzing images:', error);
-      alert(`Error analyzing images: ${error.message}`);
-      // If error occurs, go back to analysis step to allow retry
-      setCurrentStep('analysis');
-    }
-  }, [apiKey, pdfData, currentStep]);
-  
-  // Handler for generating text replacement
-  const generateTextReplacement = useCallback(async (pdfDataToUse, resultsToUse) => {
-    setIsGeneratingText(true);
-    
-    try {
-      // Generate text replacement
-      const replacementData = createTextReplacement(pdfDataToUse, resultsToUse);
-      
-      // Count successful, refused and error analysis
-      const successCount = resultsToUse.filter(r => r.success && !r.refusalDetected).length;
-      const refusalCount = resultsToUse.filter(r => r.refusalDetected).length;
-      const errorCount = resultsToUse.filter(r => !r.success).length;
-      
-      // Add counts to the data
-      setTextReplacementData({
-        ...replacementData,
-        successCount,
-        refusalCount,
-        errorCount
-      });
-    } catch (error) {
-      console.error('Error generating text replacement:', error);
-      alert(`Error generating text replacement: ${error.message}`);
-    } finally {
-      setIsGeneratingText(false);
     }
   }, []);
   
-  // Restart the entire process
-  const handleRestart = () => {
-    setCurrentStep('upload');
-    setPdfData(null);
-    setProcessingProgress({ current: 0, total: 0 });
-    setLogs([]);
-    setAnalysisResults([]);
-    setAnalysisProgress({ processedCount: 0, totalImages: 0, errorCount: 0 });
-    setTextReplacementData(null);
+  // Save API key to localStorage when it changes
+  useEffect(() => {
+    if (apiKey) {
+      localStorage.setItem('openai_api_key', apiKey);
+    }
+  }, [apiKey]);
+  
+  // Save advanced settings to localStorage when they change
+  useEffect(() => {
+    localStorage.setItem('advanced_settings', JSON.stringify(advancedSettings));
+  }, [advancedSettings]);
+  
+  // Handle settings changes
+  const handleSettingsChange = (newSettings) => {
+    setAdvancedSettings(newSettings);
   };
   
-  return (
-    <div className="app">
-      <header className="app-header">
-        <div className="container">
-          <h1 className="app-title">Everything to Text</h1>
-          <p className="app-subtitle">Convert PDFs to text with AI-powered image analysis</p>
-        </div>
-      </header>
+  // Handle file selection and automatically start processing
+  const handleFileSelected = (file) => {
+    setSelectedFile(file);
+    // Reset state when a new file is selected
+    setPdfData(null);
+    setExtractedImages([]);
+    setProcessedImageIds([]);
+    setRefusedImageIds([]);
+    setExtractedText('');
+    setError(null);
+    setCurrentPage(0);
+    setTotalPages(0);
+    setMaxCompletedStep(1); // Reset max completed step
+    
+    // If API key is already present, start processing automatically
+    if (apiKey) {
+      handleProcessPdf(file);
+    }
+  };
+  
+  // Reset the entire process
+  const handleReset = () => {
+    setCurrentStep(1);
+    setMaxCompletedStep(1); // Reset max completed step
+    setSelectedFile(null);
+    setPdfData(null);
+    setExtractedImages([]);
+    setProcessedImageIds([]);
+    setRefusedImageIds([]);
+    setExtractedText('');
+    setError(null);
+    setIsProcessing(false);
+    setProgress(0);
+    setProgressStage('');
+    setCurrentPage(0);
+    setTotalPages(0);
+  };
+  
+  // Handle API key change and start processing if file already selected
+  const handleApiKeyChange = (newKey) => {
+    setApiKey(newKey);
+    
+    // If file is already selected and this is a valid API key, start processing
+    if (selectedFile && newKey && newKey.length > 10) {
+      handleProcessPdf(selectedFile);
+    }
+  };
+  
+  // Process PDF to extract images
+  const handleProcessPdf = async (fileToProcess) => {
+    const fileToUse = fileToProcess || selectedFile;
+    if (!fileToUse || !apiKey) return;
+    
+    setError(null);
+    setIsProcessing(true);
+    setProgress(0);
+    setCurrentStep(2); // Move to Extract Graphics step
+    setProgressStage('Extracting images from PDF');
+    
+    try {
+      // Read the file
+      const fileArrayBuffer = await fileToUse.arrayBuffer();
       
-      <main className="container">
-        {/* API Key Input - Always visible but collapsible */}
-        <ApiKeyInput onApiKeyChange={handleApiKeyChange} />
-        
-        {/* Step 1: Upload PDF */}
-        {currentStep === 'upload' && (
-          <div className="card">
-            <h2>Upload PDF Document</h2>
-            <p className="text-sm" style={{ marginBottom: '16px' }}>
-              Upload a PDF to extract both text and images. All processing happens in your browser - nothing is sent to a server.
-            </p>
+      // Process PDF document
+      const result = await processPdfDocument(fileArrayBuffer, {
+        onProgress: (progress) => {
+          setProgress(progress * 100);
+        },
+        onLog: (message) => {
+          console.log(message);
+          
+          // Check for page processing messages to update the counter
+          const pageMatch = message.match(/Processing page (\d+) of (\d+)/);
+          if (pageMatch) {
+            setCurrentPage(parseInt(pageMatch[1], 10));
+            setTotalPages(parseInt(pageMatch[2], 10));
+          }
+        }
+      });
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to process PDF');
+      }
+      
+      // Store PDF data and extracted images
+      setPdfData(result);
+      setExtractedImages(result.images || []);
+      
+      // Update total pages if not set by log messages
+      if (totalPages === 0 && result.totalPages) {
+        setTotalPages(result.totalPages);
+      }
+      
+      // Start image analysis automatically after a brief pause
+      if (result.images && result.images.length > 0) {
+        // Small delay to show the extracted images before starting analysis
+        setTimeout(() => {
+          setCurrentStep(3); // Move to Analyze Graphics step
+          handleAnalyzeImages(result, result.images);
+        }, 500);
+      }
+    } catch (err) {
+      console.error('Error processing PDF:', err);
+      setError(`Failed to process PDF: ${err.message}`);
+      setIsProcessing(false);
+    }
+  };
+  
+  // Analyze extracted images
+  const handleAnalyzeImages = async (pdfDataToUse, imagesToProcess) => {
+    const pdfToUse = pdfDataToUse || pdfData;
+    const imagesToUse = imagesToProcess || extractedImages;
+    
+    if (!pdfToUse || !imagesToUse.length || !apiKey) return;
+    
+    setProgressStage('Analyzing images with AI');
+    setProgress(0);
+    setProcessedImageIds([]);
+    setRefusedImageIds([]);
+    
+    try {
+      // Process batch images with user's advanced settings
+      const result = await processBatchImages(
+        { ...pdfToUse, images: imagesToUse },
+        apiKey,
+        advancedSettings.processing, // Use the user's settings here
+        {
+          onProgress: (status) => {
+            setProgress(status.progressPercentage || 0);
+          },
+          onImageProcessed: (result) => {
+            console.log('Image processed:', result);
             
-            <FileUploader onFileUpload={handleFileUpload} />
-          </div>
-        )}
-        
-        {/* Step 2: Processing PDF */}
-        {currentStep === 'processing' && (
-          <div className="card">
-            <h2>Processing PDF</h2>
-            <p className="text-sm" style={{ marginBottom: '16px' }}>
-              Extracting text and images from your PDF...
-            </p>
+            if (result.success) {
+              if (result.refusalDetected) {
+                setRefusedImageIds(prevIds => [...prevIds, result.imageId]);
+                console.log(`Image ${result.imageId} was refused by AI`);
+              } else {
+                setProcessedImageIds(prevIds => [...prevIds, result.imageId]);
+              }
+            }
+          },
+          onError: (error) => {
+            console.error('Image processing error:', error);
+          },
+          onComplete: (results) => {
+            console.log('All images processed:', results);
             
-            <ProcessingProgress 
-              current={processingProgress.current} 
-              total={processingProgress.total}
-              status="Processing PDF"
-              logs={logs}
-            />
-          </div>
-        )}
-        
-        {/* Step 2.5: Processing Analysis */}
-        {currentStep === 'processing-analysis' && (
-          <div className="card">
-            <h2>Analyzing Images</h2>
-            <p className="text-sm" style={{ marginBottom: '16px' }}>
-              AI is analyzing {pdfData?.images?.length} images from your PDF...
-            </p>
-            
-            <ProcessingProgress 
-              current={analysisProgress.processedCount} 
-              total={analysisProgress.totalImages}
-              status="Analyzing Images"
-            />
-            
-            <ImageGrid 
-              images={pdfData?.images || []} 
-              showAnalysisStatus={analysisResults.length > 0}
-              analysisResults={analysisResults}
-            />
-          </div>
-        )}
-        
-        {/* Step 3: Image Analysis (only shown when API key is missing) */}
-        {currentStep === 'analysis' && (
-          <div className="card">
-            <h2>Image Analysis</h2>
-            
-            <div className="alert alert-warning">
-              <strong>API Key Required</strong>
-              <p>Please enter your OpenAI API key above to analyze the images.</p>
-            </div>
-            
-            <div className="flex justify-between items-center" style={{ marginBottom: '16px' }}>
-              <p className="text-sm">
-                {pdfData?.images?.length} images extracted from {pdfData?.totalPages} pages
-                {pdfData?.originalImageCount > pdfData?.images?.length && (
-                  <span> ({pdfData.originalImageCount - pdfData.images.length} duplicates removed)</span>
-                )}
-              </p>
+            let extracted;
+            if (pdfToUse.pages && pdfToUse.pages.length > 0) {
+              const textReplacement = createTextReplacement(pdfToUse, results);
+              console.log('Text replacement result:', textReplacement);
               
-              <button 
-                className="btn btn-primary"
-                onClick={() => processBatchImagesHandler()}
-                disabled={!apiKey || analysisProgress.processedCount > 0}
-              >
-                Analyze All Images
-              </button>
-            </div>
-            
-            <ImageGrid 
-              images={pdfData?.images || []} 
-              showAnalysisStatus={analysisResults.length > 0}
-              analysisResults={analysisResults}
-            />
-          </div>
-        )}
-        
-        {/* Step 4: Results */}
-        {currentStep === 'results' && (
-          <>
-            <div className="flex justify-between items-center" style={{ marginBottom: '16px' }}>
-              <h2>Results</h2>
-              <button 
-                className="btn btn-secondary"
-                onClick={handleRestart}
-              >
-                Process Another PDF
-              </button>
-            </div>
-            
-            <TextOutput 
-              textData={textReplacementData} 
-              isLoading={isGeneratingText}
-            />
-            
-            {pdfData?.images?.length > 0 && (
-              <div className="card">
-                <h3>Images from PDF</h3>
-                <ImageGrid 
-                  images={pdfData.images} 
-                  showAnalysisStatus={analysisResults.length > 0}
-                  analysisResults={analysisResults}
-                />
+              if (textReplacement.success) {
+                const combinedText = textReplacement.pages
+                  .map(page => `--- PAGE ${page.pageNumber} ---\n\n${page.content}\n\n`)
+                  .join('');
                 
-                {analysisResults.length > 0 && (
-                  <div className="text-center mt-4">
-                    <button 
-                      className="btn btn-primary"
-                      onClick={() => {
-                        // Download JSON results
-                        const dataStr = JSON.stringify(analysisResults, null, 2);
-                        const dataBlob = new Blob([dataStr], { type: 'application/json' });
-                        const url = URL.createObjectURL(dataBlob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'image_analysis_results.json';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                      }}
-                    >
-                      Download Analysis Results (JSON)
-                    </button>
-                  </div>
-                )}
+                setExtractedText(combinedText);
+              } else {
+                extracted = extractTextFromBatchResults(results, pdfToUse);
+                setExtractedText(extracted.extractedText || '');
+              }
+            } else {
+              extracted = extractTextFromBatchResults(results, pdfToUse);
+              setExtractedText(extracted.extractedText || '');
+            }
+            
+            setCurrentStep(4); // Move to Result step (now step 4)
+            setIsProcessing(false);
+          }
+        }
+      );
+      
+      console.log('Processing complete with result:', result);
+    } catch (err) {
+      console.error('Error analyzing images:', err);
+      setError(`Failed to analyze images: ${err.message}`);
+      setIsProcessing(false);
+    }
+  };
+  
+  // Handle cancel operation
+  const handleCancel = () => {
+    setIsProcessing(false);
+    setProgress(0);
+    setProgressStage('');
+    
+    // Go back to the upload step
+    setCurrentStep(1);
+  };
+  
+  // Handle step click for navigation
+  const handleStepClick = (step) => {
+    // If processing is in progress, don't allow navigation
+    if (isProcessing) {
+      return;
+    }
+    
+    // Don't re-set the current step if we're already on it
+    if (step === currentStep) {
+      return;
+    }
+
+    // Handle setting appropriate UI state based on step
+    if (step === 1) {
+      // Going to Upload step
+      setProgressStage('');
+      setProgress(0);
+    } else if (step === 2 && extractedImages.length > 0) {
+      // Going to Extract Graphics (showing completed extraction)
+      setProgressStage('Extraction complete');
+      setProgress(100);
+    } else if (step === 3) {
+      // Going to Analyze Graphics
+      if (processedImageIds.length > 0 || refusedImageIds.length > 0) {
+        // If analysis was completed, show that
+        setProgressStage('Analysis complete');
+        setProgress(100);
+      } else if (extractedImages.length > 0) {
+        // If just extraction was completed
+        setProgressStage('Ready to analyze images');
+        setProgress(0);
+      }
+    } else if (step === 4 && extractedText) {
+      // Going to Result (already have results)
+      setProgressStage('');
+      setProgress(100);
+    }
+    
+    // Update current step
+    setCurrentStep(step);
+  };
+  
+  // Render step content based on current step
+  const renderStepContent = () => {
+    switch (currentStep) {
+      case 1: // Upload
+  return (
+          <>
+            <FileUploader 
+              onFileSelected={handleFileSelected} 
+              isUploading={isProcessing}
+              uploadProgress={progress}
+            />
+            
+            {!isProcessing && (
+              <>
+                <APIKeyInput value={apiKey} onChange={handleApiKeyChange} />
+                <AdvancedSettings
+                  settings={advancedSettings}
+                  onSettingsChange={handleSettingsChange}
+                />
+              </>
+            )}
+            
+            {selectedFile && !apiKey && (
+              <div className="step-actions">
+                <Button 
+                  variant="primary" 
+                  onClick={() => handleProcessPdf()}
+                  disabled={!selectedFile || !apiKey || isProcessing}
+                  isLoading={isProcessing}
+                  fullWidth
+                >
+                  {isProcessing ? 'Processing...' : 'Process PDF'}
+                </Button>
               </div>
             )}
           </>
+        );
+        
+      case 2: // Extract Graphics
+        return (
+          <>
+            <div className="step-info">
+              <p>{progressStage}</p>
+              {totalPages > 0 && (
+                <p className="page-counter">
+                  {currentPage > 0 ? `Page ${currentPage}/${totalPages}` : totalPages > 1 ? `${totalPages} pages` : '1 page'}
+                </p>
+              )}
+              <ProgressBar progress={progress} />
+            </div>
+            
+            {extractedImages.length > 0 && (
+              <ImageGrid 
+                images={extractedImages} 
+                processedImages={[]}
+                refusedImages={[]}
+                isProcessing={isProcessing}
+              />
+            )}
+            
+            <div className="step-actions">
+              {isProcessing ? (
+                <Button 
+                  variant="danger" 
+                  onClick={handleCancel}
+                >
+                  Cancel
+                </Button>
+              ) : (
+                <>
+                  <Button 
+                    variant="secondary" 
+                    onClick={() => handleStepClick(1)}
+                  >
+                    Back
+                  </Button>
+                  {maxCompletedStep >= 3 && (
+                    <Button 
+                      variant="primary" 
+                      onClick={() => handleStepClick(3)}
+                    >
+                      Continue
+                    </Button>
+                  )}
+                </>
+              )}
+        </div>
+          </>
+        );
+        
+      case 3: // Analyze Graphics
+        return (
+          <>
+            <div className="step-info">
+              <p>{progressStage}</p>
+              <ProgressBar 
+                progress={progress} 
+                label={processedImageIds.length > 0 || refusedImageIds.length > 0 
+                  ? `${processedImageIds.length + refusedImageIds.length} of ${extractedImages.length} images processed (${refusedImageIds.length} refused)` 
+                  : undefined} 
+              />
+      </div>
+      
+            {extractedImages.length > 0 && (
+              <ImageGrid 
+                images={extractedImages} 
+                processedImages={processedImageIds}
+                refusedImages={refusedImageIds}
+                isProcessing={isProcessing}
+              />
+            )}
+            
+            <div className="step-actions">
+              {isProcessing ? (
+                <Button 
+                  variant="danger" 
+                  onClick={handleCancel}
+                >
+                  Cancel
+                </Button>
+              ) : (
+                <>
+                  <Button 
+                    variant="secondary" 
+                    onClick={() => handleStepClick(2)}
+                  >
+                    Back
+                  </Button>
+                  {maxCompletedStep >= 4 && (
+                    <Button 
+                      variant="primary" 
+                      onClick={() => handleStepClick(4)}
+                    >
+                      Continue
+                    </Button>
+                  )}
+                  {maxCompletedStep < 4 && extractedImages.length > 0 && processedImageIds.length === 0 && refusedImageIds.length === 0 && (
+                    <Button 
+                      variant="primary" 
+                      onClick={() => handleAnalyzeImages()}
+                    >
+                      Start Analysis
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </>
+        );
+        
+      case 4: // Result (now step 4)
+        return (
+          <>
+            <TextResult 
+              text={extractedText} 
+              fileName={selectedFile?.name || 'document'}
+            />
+            
+            <div className="step-actions">
+              <Button 
+                variant="secondary" 
+                onClick={() => handleStepClick(3)}
+              >
+                Back
+              </Button>
+              <Button 
+                variant="primary" 
+                onClick={handleReset}
+              >
+                Process New File
+              </Button>
+            </div>
+          </>
+        );
+        
+      default:
+        return null;
+    }
+  };
+  
+  return (
+    <div className="app-container">
+      <header className="app-header">
+        <h1>Everything to Text</h1>
+        <p>Extract and analyze text from any PDF</p>
+      </header>
+      
+      <main className="content-card">
+        <Stepper 
+          currentStep={currentStep} 
+          steps={STEPS} 
+          onStepClick={handleStepClick}
+          isProcessing={isProcessing}
+          maxCompletedStep={maxCompletedStep}
+        />
+        
+        {error && (
+          <div className="error-message">
+            {error}
+            <button 
+              className="clear-error" 
+              onClick={() => setError(null)}
+              aria-label="Clear error"
+            >
+              ×
+            </button>
+          </div>
         )}
+        
+        <div className="step-content">
+          {renderStepContent()}
+        </div>
       </main>
       
-      <footer style={{ textAlign: 'center', padding: '20px 0', marginTop: '32px', borderTop: '1px solid var(--border-color)', fontSize: '14px', color: '#666' }}>
-        <div className="container">
-          <p>Everything to Text - PDF to Text Conversion with AI-Powered Image Analysis</p>
-          <p className="text-xs" style={{ marginTop: '4px' }}>All processing happens in your browser. Your files are never uploaded to a server.</p>
-        </div>
+      <footer className="app-footer">
+        <p>Powered by OpenAI • All processing happens in your browser</p>
       </footer>
     </div>
   );
 }
 
-export default App; 
+export default App;
