@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { withRetry } from './retryUtils';
 
 /**
  * Detects if a response from an LLM appears to be a refusal
@@ -24,106 +25,79 @@ export async function detectRefusal(responseText, apiKey, options = {}) {
     dangerouslyAllowBrowser: true // Required for client-side usage
   });
 
-  // Set up retry parameters
-  const maxRetries = options.maxRetries || 3;
-  let retryCount = 0;
-  let lastError = null;
+  // Truncate the response text if it's very long to save on token usage
+  const truncatedText = responseText.length > 500 
+    ? responseText.substring(0, 500) + '...'
+    : responseText;
 
-  // Retry logic with exponential backoff
-  while (retryCount <= maxRetries) {
-    try {
-      // Use the regular chat completions API instead of responses API
-      // since the responses API format is causing errors
-      const response = await openai.chat.completions.create({
-        model: options.model || "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: "You are an AI assistant that detects when text contains a refusal or safety response from an AI system. Your task is to identify whether the user's message is an AI refusal."
-          },
-          {
-            role: "user",
-            content: `Please analyze the following AI response and determine if it contains a refusal to answer or expresses the inability to to analyze iamges. Only respond with 'true' if it's a refusal, or 'false' if it's not a refusal.\n\nAI response: "${responseText}"`
-          }
-        ],
-        temperature: options.temperature || 0.1,
-        max_tokens: options.maxTokens || 50,
-        functions: [
-          {
-            name: "is_refusal",
-            description: "Returns a boolean indicating whether the input is a refusal or not.",
-            parameters: {
-              type: "object",
-              required: ["is_refusal"],
-              properties: {
-                is_refusal: {
-                  type: "boolean",
-                  description: "Set to true if a refusal is detected, false otherwise."
-                }
+  // The function to execute with retry logic
+  const checkRefusal = async () => {
+    // Use the regular chat completions API instead of responses API
+    const response = await openai.chat.completions.create({
+      model: options.model || "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You detect when text contains a refusal or safety response from an AI system."
+        },
+        {
+          role: "user",
+          content: `Determine if this AI response contains a refusal to answer or inability to analyze images. Response: "${truncatedText}"`
+        }
+      ],
+      temperature: options.temperature || 0.1,
+      max_tokens: options.maxTokens || 50,
+      functions: [
+        {
+          name: "is_refusal",
+          description: "Returns a boolean indicating whether the input is a refusal or not.",
+          parameters: {
+            type: "object",
+            required: ["is_refusal"],
+            properties: {
+              is_refusal: {
+                type: "boolean",
+                description: "Set to true if a refusal is detected, false otherwise."
               }
             }
           }
-        ],
-        function_call: { name: "is_refusal" }
-      });
-
-      // Extract the function call result
-      const functionCall = response.choices[0]?.message?.function_call;
-      
-      if (functionCall && functionCall.name === "is_refusal") {
-        try {
-          const parsedArgs = JSON.parse(functionCall.arguments);
-          
-          // Return successful response with just the boolean value
-          return {
-            success: true,
-            isRefusal: parsedArgs.is_refusal,
-            retries: retryCount,
-            responseDetails: response
-          };
-        } catch (parseError) {
-          throw new Error(`Failed to parse function arguments: ${parseError.message}`);
         }
-      } else {
-        // Fallback to parsing the direct text response if function call isn't available
-        const textResponse = response.choices[0]?.message?.content || '';
-        const isRefusal = textResponse.toLowerCase().includes('true');
+      ],
+      function_call: { name: "is_refusal" }
+    });
+
+    // Extract the function call result
+    const functionCall = response.choices[0]?.message?.function_call;
+    
+    if (functionCall && functionCall.name === "is_refusal") {
+      try {
+        const parsedArgs = JSON.parse(functionCall.arguments);
         
+        // Return successful response with just the boolean value
         return {
           success: true,
-          isRefusal: isRefusal,
-          retries: retryCount,
+          isRefusal: parsedArgs.is_refusal,
           responseDetails: response
         };
+      } catch (parseError) {
+        throw new Error(`Failed to parse function arguments: ${parseError.message}`);
       }
-    } catch (error) {
-      lastError = error;
-      retryCount++;
-
-      // If we've reached max retries, break out of the loop
-      if (retryCount > maxRetries) {
-        break;
-      }
-
-      // Log retry information
-      console.warn(`OpenAI API request failed (attempt ${retryCount}/${maxRetries}): ${error.message}`);
+    } else {
+      // Fallback to parsing the direct text response if function call isn't available
+      const textResponse = response.choices[0]?.message?.content || '';
+      const isRefusal = textResponse.toLowerCase().includes('true');
       
-      // Calculate exponential backoff delay: 2^retry * 500ms (0.5s, 1s, 2s)
-      const delay = Math.min(2 ** retryCount * 500, 8000); // Cap at 8 seconds
-      
-      // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, delay));
+      return {
+        success: true,
+        isRefusal: isRefusal,
+        responseDetails: response
+      };
     }
-  }
-
-  // If we get here, all retries failed
-  console.error("All retry attempts failed:", lastError);
-  
-  // Return structured error response
-  return {
-    success: false,
-    error: lastError?.message || 'Failed after multiple retry attempts',
-    details: lastError?.response?.data || lastError,
-    retries: retryCount - 1
   };
+
+  // Use the withRetry utility
+  return withRetry(checkRefusal, {
+    maxRetries: options.maxRetries || 3,
+    onError: (message) => console.warn(message)
+  });
 } 

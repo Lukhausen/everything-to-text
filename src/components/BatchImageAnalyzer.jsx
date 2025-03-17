@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { processBatchImages, extractTextFromBatchResults } from '../utils/batchImageAnalysisUtils';
 
 function BatchImageAnalyzer({ pdfData, onAnalysisComplete, onNavigateToTextReplacement }) {
@@ -13,6 +13,13 @@ function BatchImageAnalyzer({ pdfData, onAnalysisComplete, onNavigateToTextRepla
   
   // Maximum number of concurrent requests
   const MAX_CONCURRENT_REQUESTS = 100;
+  
+  // Calculate derived state values
+  const successfulCount = results.filter(r => r.success && !r.refusalDetected).length;
+  const refusalCount = results.filter(r => r.refusalDetected).length;
+  const errorCount = results.filter(r => !r.success).length;
+  const progressPercentage = totalImages > 0 ? (processedCount / totalImages) * 100 : 0;
+  const canNavigateToText = results.length > 0 && successfulCount > 0 && !isProcessing;
   
   // Load API key from localStorage on component mount
   useEffect(() => {
@@ -48,6 +55,11 @@ function BatchImageAnalyzer({ pdfData, onAnalysisComplete, onNavigateToTextRepla
   const handleApiKeyChange = (e) => {
     setApiKey(e.target.value);
   };
+  
+  // Memoize the getImageByIdFromPdfData function to avoid recreating it on every render
+  const getImageByIdFromPdfData = useCallback((imageId) => {
+    return pdfData?.images?.find(image => image.id === imageId) || {};
+  }, [pdfData]);
   
   const processBatch = async () => {
     if (!apiKey) {
@@ -123,14 +135,84 @@ function BatchImageAnalyzer({ pdfData, onAnalysisComplete, onNavigateToTextRepla
     }
   };
   
-  // Calculate progress percentage - use a memoized value to reduce calculations
-  const progressPercentage = totalImages > 0 ? (processedCount / totalImages) * 100 : 0;
-  
-  // Determine if we can navigate to text replacement view
-  const canNavigateToText = results.length > 0 && results.some(r => r.success) && !isProcessing;
-  
-  const getImageByIdFromPdfData = (imageId) => {
-    return pdfData.images.find(image => image.id === imageId) || {};
+  // Prepare result card rendering function to reduce redundancy
+  const renderResultCard = (result, index) => {
+    const imageData = getImageByIdFromPdfData(result.imageId);
+    
+    return (
+      <div 
+        key={result.imageId} 
+        style={{ 
+          marginBottom: '20px', 
+          border: '1px solid #ddd', 
+          borderRadius: '4px', 
+          padding: '15px',
+          backgroundColor: result.success ? 'white' : '#fff5f5'
+        }}
+      >
+        <div style={{ display: 'flex', gap: '15px' }}>
+          <div style={{ width: '150px', flexShrink: 0 }}>
+            <img 
+              src={imageData?.dataURL || ''} 
+              alt={`Image ${index+1}`} 
+              style={{ 
+                maxWidth: '100%', 
+                border: '1px solid #ccc',
+                borderRadius: '4px'
+              }} 
+            />
+            <p style={{ fontSize: '12px', marginTop: '5px' }}>
+              Page: {imageData?.pageNumber || 'Unknown'}
+            </p>
+          </div>
+          
+          <div style={{ flex: 1 }}>
+            {!result.success ? (
+              <div style={{ 
+                color: '#721c24', 
+                backgroundColor: '#f8d7da', 
+                padding: '10px', 
+                borderRadius: '4px'
+              }}>
+                <strong>Error:</strong> {result.error}
+              </div>
+            ) : result.refusalDetected ? (
+              <div style={{ 
+                color: '#856404', 
+                backgroundColor: '#fff3cd', 
+                padding: '10px', 
+                borderRadius: '4px'
+              }}>
+                <strong>Content Filtered:</strong> The AI model refused to analyze this image after {result.refusalRetries} retry attempts.
+              </div>
+            ) : (
+              <>
+                <h4 style={{ marginTop: 0 }}>Analysis:</h4>
+                <pre 
+                  style={{ 
+                    whiteSpace: 'pre-wrap', 
+                    backgroundColor: '#f5f5f5', 
+                    padding: '10px', 
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '200px',
+                    fontSize: '14px'
+                  }}
+                >
+                  {result.text}
+                </pre>
+                
+                {result.retries > 0 && (
+                  <div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
+                    <div>Network retries: {result.retries}</div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   };
   
   return (
@@ -251,19 +333,19 @@ function BatchImageAnalyzer({ pdfData, onAnalysisComplete, onNavigateToTextRepla
           
           <p>
             <strong>Processed:</strong> {results.length} of {totalImages} images
-            {results.filter(r => r.success && !r.refusalDetected).length < results.length && (
+            {successfulCount < results.length && (
               <>
                 <span style={{ color: '#1976d2', marginLeft: '10px' }}>
-                  ({results.filter(r => r.success && !r.refusalDetected).length} successful)
+                  ({successfulCount} successful)
                 </span>
-                {results.filter(r => r.refusalDetected).length > 0 && (
+                {refusalCount > 0 && (
                   <span style={{ color: '#ff9800', marginLeft: '10px' }}>
-                    ({results.filter(r => r.refusalDetected).length} refusals)
+                    ({refusalCount} refusals)
                   </span>
                 )}
-                {results.filter(r => !r.success).length > 0 && (
+                {errorCount > 0 && (
                   <span style={{ color: '#f44336', marginLeft: '10px' }}>
-                    ({results.filter(r => !r.success).length} errors)
+                    ({errorCount} errors)
                   </span>
                 )}
               </>
@@ -290,80 +372,7 @@ function BatchImageAnalyzer({ pdfData, onAnalysisComplete, onNavigateToTextRepla
           
           <div style={{ marginBottom: '20px' }}>
             <h3>Individual Results</h3>
-            {results.map((result, index) => (
-              <div 
-                key={result.imageId} 
-                style={{ 
-                  marginBottom: '20px', 
-                  border: '1px solid #ddd', 
-                  borderRadius: '4px', 
-                  padding: '15px',
-                  backgroundColor: result.success ? 'white' : '#fff5f5'
-                }}
-              >
-                <div style={{ display: 'flex', gap: '15px' }}>
-                  <div style={{ width: '150px', flexShrink: 0 }}>
-                    <img 
-                      src={getImageByIdFromPdfData(result.imageId)?.dataURL || ''} 
-                      alt={`Image ${index+1}`} 
-                      style={{ 
-                        maxWidth: '100%', 
-                        border: '1px solid #ccc',
-                        borderRadius: '4px'
-                      }} 
-                    />
-                    <p style={{ fontSize: '12px', marginTop: '5px' }}>
-                      Page: {getImageByIdFromPdfData(result.imageId)?.pageNumber || 'Unknown'}
-                    </p>
-                  </div>
-                  
-                  <div style={{ flex: 1 }}>
-                    {!result.success ? (
-                      <div style={{ 
-                        color: '#721c24', 
-                        backgroundColor: '#f8d7da', 
-                        padding: '10px', 
-                        borderRadius: '4px'
-                      }}>
-                        <strong>Error:</strong> {result.error}
-                      </div>
-                    ) : result.refusalDetected ? (
-                      <div style={{ 
-                        color: '#856404', 
-                        backgroundColor: '#fff3cd', 
-                        padding: '10px', 
-                        borderRadius: '4px'
-                      }}>
-                        <strong>Content Filtered:</strong> The AI model refused to analyze this image after {result.refusalRetries} retry attempts.
-                      </div>
-                    ) : (
-                      <>
-                        <h4 style={{ marginTop: 0 }}>Analysis:</h4>
-                        <pre 
-                          style={{ 
-                            whiteSpace: 'pre-wrap', 
-                            backgroundColor: '#f5f5f5', 
-                            padding: '10px', 
-                            borderRadius: '4px',
-                            overflow: 'auto',
-                            maxHeight: '200px',
-                            fontSize: '14px'
-                          }}
-                        >
-                          {result.text}
-                        </pre>
-                        
-                        {result.retries > 0 && (
-                          <div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
-                            <div>Network retries: {result.retries}</div>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
+            {results.map(renderResultCard)}
           </div>
           
           {/* Raw Data Section */}

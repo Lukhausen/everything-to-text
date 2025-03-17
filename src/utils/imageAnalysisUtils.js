@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { detectRefusal } from './refusalDetectionUtils';
+import { withRetry } from './retryUtils';
 
 /**
  * Analyzes an image using OpenAI's vision capabilities with automatic retries
@@ -30,118 +31,92 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
     ? base64Image 
     : `data:image/png;base64,${base64Image}`;
 
-  // Set up retry parameters
-  const maxRetries = options.maxRetries || 3;
-  const maxRefusalRetries = options.maxRefusalRetries || 3;
-  let retryCount = 0;
+  // Track refusal retries separately
   let refusalRetryCount = 0;
-  let lastError = null;
-  let refusalDetected = false;
+  const maxRefusalRetries = options.maxRefusalRetries || 3;
 
   // The preset prompt that will be used for all image analysis
   const PRESET_PROMPT = "Describe everything in great detail. Transcribe all visible text word for word.";
 
-  // Retry logic with exponential backoff
-  while (retryCount <= maxRetries) {
-    try {
-      // Make API request to OpenAI with preset prompt
-      const response = await openai.chat.completions.create({
-        model: options.model || "gpt-4o-mini",
-        messages: [
-          { 
-            role: "user", 
-            content: [
-              { type: "text", text: PRESET_PROMPT },
-              { 
-                type: "image_url", 
-                image_url: {
-                  url: dataURI
-                }
+  // Function to perform basic image analysis without refusal checking
+  const performBasicAnalysis = async () => {
+    // Make API request to OpenAI with preset prompt
+    const response = await openai.chat.completions.create({
+      model: options.model || "gpt-4o-mini",
+      messages: [
+        { 
+          role: "user", 
+          content: [
+            { type: "text", text: PRESET_PROMPT },
+            { 
+              type: "image_url", 
+              image_url: {
+                url: dataURI
               }
-            ]
-          }
-        ],
-        max_tokens: options.maxTokens || 1000,
-        temperature: options.temperature || 0.7
-      });
+            }
+          ]
+        }
+      ],
+      max_tokens: options.maxTokens || 1000,
+      temperature: options.temperature || 0.7
+    });
 
-      const responseText = response.choices[0]?.message?.content || '';
-      
-      // Check if the response is a refusal using the simplified refusal detection
-      if (responseText) {
+    const responseText = response.choices[0]?.message?.content || '';
+    
+    return {
+      success: true,
+      text: responseText,
+      response: response
+    };
+  };
+
+  // Use withRetry for API call retries
+  const result = await withRetry(performBasicAnalysis, {
+    maxRetries: options.maxRetries || 3,
+    onError: (message) => console.warn(message),
+    retryOnResult: async (result) => {
+      // If the API call was successful, check for refusal
+      if (result.success && result.text) {
         try {
-          const refusalCheck = await detectRefusal(responseText, apiKey, { 
+          // Check if the response is a refusal
+          const refusalCheck = await detectRefusal(result.text, apiKey, { 
             temperature: 0.1,
             model: "gpt-4o-mini",
             maxRetries: 2
           });
           
+          // If refusal detected and we still have refusal retries left, retry
+          if (refusalCheck.success && refusalCheck.isRefusal && refusalRetryCount < maxRefusalRetries) {
+            refusalRetryCount++;
+            console.log(`Retrying after refusal detection (attempt ${refusalRetryCount}/${maxRefusalRetries})`);
+            return true;
+          }
+          
+          // If refusal detected but we've used all retries, return result with refusal flag
           if (refusalCheck.success && refusalCheck.isRefusal) {
-            console.warn(`Refusal detected in response`);
-            
-            // If we still have refusal retries left, retry with the original prompt
-            if (refusalRetryCount < maxRefusalRetries) {
-              refusalRetryCount++;
-              refusalDetected = true;
-              
-              // Log the retry
-              console.log(`Retrying after refusal detection (attempt ${refusalRetryCount}/${maxRefusalRetries})`);
-              
-              // Calculate exponential backoff delay for refusal retries
-              const refusalDelay = Math.min(2 ** refusalRetryCount * 1000, 8000); // Cap at 8 seconds
-              
-              // Wait before retrying
-              await new Promise(resolve => setTimeout(resolve, refusalDelay));
-              
-              // Try again with the same preset prompt
-              continue;
-            }
+            result.refusalDetected = true;
+            result.text = ''; // Clear text when refusal detected
           }
         } catch (refusalError) {
-          // If refusal detection fails, log but continue with the original response
+          // If refusal detection fails, log but continue
           console.warn(`Refusal detection failed: ${refusalError.message}`);
         }
       }
       
-      // Return successful response
-      return {
-        success: true,
-        text: responseText,
-        response: response,
-        retries: retryCount,
-        refusalRetries: refusalRetryCount,
-        refusalDetected: refusalDetected
-      };
-    } catch (error) {
-      lastError = error;
-      retryCount++;
-
-      // If we've reached max retries, break out of the loop
-      if (retryCount > maxRetries) {
-        break;
+      // No more retries needed
+      return false;
+    },
+    onRetry: (info) => {
+      if (info.type === 'result-based') {
+        console.log(`Retrying after refusal detection (attempt ${refusalRetryCount}/${maxRefusalRetries})`);
       }
-
-      // Log retry information
-      console.warn(`OpenAI API request failed (attempt ${retryCount}/${maxRetries}): ${error.message}`);
-      
-      // Calculate exponential backoff delay: 2^retry * 500ms (0.5s, 1s, 2s)
-      const delay = Math.min(2 ** retryCount * 500, 8000); // Cap at 8 seconds
-      
-      // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, delay));
     }
-  }
+  });
 
-  // If we get here, all retries failed
-  console.error("All retry attempts failed:", lastError);
-  
-  // Return structured error response
+  // Return the final result with additional metadata
   return {
-    success: false,
-    error: lastError?.message || 'Failed after multiple retry attempts',
-    details: lastError?.response?.data || lastError,
-    retries: retryCount - 1,
+    ...result,
     refusalRetries: refusalRetryCount,
-    refusalDetected: refusalDetected
+    refusalDetected: result.refusalDetected || false
   };
 } 

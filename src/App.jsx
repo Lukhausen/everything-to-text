@@ -132,7 +132,7 @@ function App() {
                 alignItems: 'center',
                 justifyContent: 'center'
               }}>
-                {analysisResults.filter(r => r.success).length}
+                {analysisResults.filter(r => r.success && !r.refusalDetected).length}
               </span>
             )}
           </button>

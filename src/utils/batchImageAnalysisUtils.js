@@ -49,12 +49,6 @@ export async function processBatchImages(
   // Create a results array upfront instead of a Map to avoid constant rebuilding
   const results = new Array(images.length);
   
-  // Create a mapping from image ID to index for fast lookups
-  const imageIdToIndex = new Map();
-  images.forEach((image, index) => {
-    imageIdToIndex.set(image.id, index);
-  });
-  
   // Update the status for callbacks
   const updateStatus = () => {
     return {
@@ -142,8 +136,16 @@ export async function processBatchImages(
   const processBatches = async () => {
     const { maxConcurrentRequests } = processingOptions;
     
-    // Create a deep copy of the PDF data to avoid modifying the original
-    const updatedPdfData = JSON.parse(JSON.stringify(pdfData));
+    // Create a minimal copy of the PDF data instead of a complete deep clone
+    // This avoids duplicating large image data unnecessarily
+    const updatedPdfData = {
+      name: pdfData.name,
+      totalPages: pdfData.totalPages,
+      metadata: pdfData.metadata,
+      processingTime: pdfData.processingTime,
+      // Reference the original images array instead of copying all image data
+      images: pdfData.images
+    };
     
     // Process in batches to limit concurrent requests
     for (let i = 0; i < images.length; i += maxConcurrentRequests) {
@@ -166,35 +168,14 @@ export async function processBatchImages(
     // Don't add extra analysis information directly to the images
     // This removes redundancy since we have imageAnalysisResults
     
-    // Create a streamlined version of the results with only essential information
-    const streamlinedResults = finalResults.map(result => {
-      if (result.success) {
-        return {
-          imageId: result.imageId,
-          success: result.success,
-          // Only include text if no refusal was detected
-          text: result.refusalDetected ? '' : result.text,
-          refusalDetected: result.refusalDetected || false,
-          refusalRetries: result.refusalRetries || 0,
-          retries: result.retries || 0
-        };
-      } else {
-        return {
-          imageId: result.imageId,
-          success: false,
-          error: result.error
-        };
-      }
-    });
-    
-    // Add results to updated PDF data with streamlined format
-    updatedPdfData.imageAnalysisResults = streamlinedResults;
+    // Use finalResults directly instead of remapping them since they're already in the correct format
+    updatedPdfData.imageAnalysisResults = finalResults;
     
     // Final callback for completion
-    statusCallbacks.onComplete(streamlinedResults, updateStatus(), updatedPdfData);
+    statusCallbacks.onComplete(finalResults, updateStatus(), updatedPdfData);
     
     return {
-      results: streamlinedResults,
+      results: finalResults,
       status: updateStatus(),
       updatedPdfData
     };
@@ -216,17 +197,28 @@ export function extractTextFromBatchResults(results, pdfData = null) {
       extractedText: '',
       totalImages: 0,
       successfulImages: 0,
-      failedImages: 0
+      failedImages: 0,
+      refusalCount: 0
     };
   }
   
-  // Only include successful results that don't have refusals
+  // Calculate statistics only once
+  const refusalCount = results.filter(r => r.success && r.refusalDetected).length;
   const successfulResults = results.filter(r => r.success && !r.refusalDetected);
+  const failedCount = results.length - successfulResults.length - refusalCount;
   
-  // Build text by page number
-  const textByPage = {};
+  // Early return if no successful results
+  if (successfulResults.length === 0) {
+    return {
+      extractedText: '',
+      totalImages: results.length,
+      successfulImages: 0,
+      refusalCount,
+      failedImages: failedCount
+    };
+  }
   
-  // Get a mapping of image IDs to page numbers if pdfData is available
+  // Create a more efficient mapping lookup
   const imageIdToPageMap = new Map();
   if (pdfData && pdfData.images) {
     pdfData.images.forEach(image => {
@@ -234,13 +226,17 @@ export function extractTextFromBatchResults(results, pdfData = null) {
     });
   }
   
+  // Build text by page number with a single loop
+  const textByPage = {};
+  
   for (const result of successfulResults) {
-    // Skip empty text (should not happen after filtering, but just in case)
+    // Skip empty text
     if (!result.text) continue;
     
     // Get page number from map or default to 0
     const pageNumber = imageIdToPageMap.get(result.imageId) || 0;
     
+    // Initialize the array if needed (more efficient than checking existence each time)
     if (!textByPage[pageNumber]) {
       textByPage[pageNumber] = [];
     }
@@ -248,24 +244,21 @@ export function extractTextFromBatchResults(results, pdfData = null) {
     textByPage[pageNumber].push(`[Image ${result.imageId}]: ${result.text}`);
   }
   
-  // Combine into a single string sorted by page
-  let extractedText = '';
+  // Combine into a single string sorted by page - use array for better string concatenation
+  const textParts = [];
   const pageNumbers = Object.keys(textByPage).sort((a, b) => Number(a) - Number(b));
   
   for (const pageNumber of pageNumbers) {
-    extractedText += `\n--- PAGE ${pageNumber} ---\n\n`;
-    extractedText += textByPage[pageNumber].join('\n\n');
-    extractedText += '\n';
+    textParts.push(`\n--- PAGE ${pageNumber} ---\n\n`);
+    textParts.push(textByPage[pageNumber].join('\n\n'));
+    textParts.push('\n');
   }
   
-  // Count results by status for statistics
-  const refusalCount = results.filter(r => r.success && r.refusalDetected).length;
-  
   return {
-    extractedText: extractedText.trim(),
+    extractedText: textParts.join('').trim(),
     totalImages: results.length,
     successfulImages: successfulResults.length,
-    refusalCount: refusalCount,
-    failedImages: results.length - successfulResults.length - refusalCount
+    refusalCount,
+    failedImages: failedCount
   };
 } 

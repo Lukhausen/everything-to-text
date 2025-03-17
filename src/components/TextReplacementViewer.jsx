@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { createTextReplacement } from '../utils/textReplacementUtils';
 
 function TextReplacementViewer({ pdfData, analysisResults }) {
-  const [combinedText, setCombinedText] = useState([]);
+  const [replacementData, setReplacementData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -26,178 +27,30 @@ function TextReplacementViewer({ pdfData, analysisResults }) {
   }, [pdfData, analysisResults]);
 
   const processData = () => {
-    // Create a map of image ID to analysis result for quick lookup
-    const imageAnalysisMap = new Map();
-    analysisResults.forEach(result => {
-      if (result.success) {
-        imageAnalysisMap.set(result.imageId, result.text);
-      }
-    });
+    // Use the utility to create replacements
+    const replacement = createTextReplacement(pdfData, analysisResults);
 
-    // Also create a map for matching image IDs even if they're combined (with _AND_)
-    const combinedImageMap = new Map();
-    analysisResults.forEach(result => {
-      if (result.success) {
-        // For combined IDs (from deduplication), also map component IDs to the analysis
-        if (result.imageId.includes('_AND_')) {
-          const idParts = result.imageId.split('_AND_');
-          idParts.forEach(id => {
-            combinedImageMap.set(id, result.text);
-          });
-        }
-        combinedImageMap.set(result.imageId, result.text);
-      }
-    });
+    if (!replacement.success) {
+      setError(replacement.error || "Failed to process text replacements");
+      setIsLoading(false);
+      return;
+    }
 
-    // Process each page
-    const processedPages = pdfData.pages.map(page => {
-      // Get the original formatted text with placeholders
-      let pageText = page.content?.formattedText || '';
-      
-      // 1. Process through image references in the page
-      if (page.imageReferences && page.imageReferences.length > 0) {
-        page.imageReferences.forEach(ref => {
-          const imageId = ref.id;
-          const placeholder = ref.placeholder;
-          const isFullPage = ref.isFullPage;
-          
-          if (!placeholder) return;
-          
-          // Find analysis text from either map
-          const analysisText = imageAnalysisMap.get(imageId) || combinedImageMap.get(imageId);
-          
-          if (analysisText && pageText.includes(placeholder)) {
-            // Create a replacement with appropriate header based on image type
-            const headerText = isFullPage 
-              ? `\n==== FULL PAGE SCAN ANALYSIS ====\n` 
-              : `\n---- IMAGE ANALYSIS START ----\n`;
-            
-            const footerText = isFullPage 
-              ? `\n==== END OF PAGE SCAN ANALYSIS ====\n` 
-              : `\n---- IMAGE ANALYSIS END ----\n`;
-            
-            const replacement = `${headerText}${analysisText}${footerText}`;
-            
-            // Replace all occurrences of the placeholder
-            pageText = pageText.replaceAll(placeholder, replacement);
-          }
-        });
-      }
-      
-      // 2. Process any remaining references not handled by imageReferences
-      // This step may be redundant now but we keep it for backward compatibility
-      if (page.imageItems) {
-        const imageItems = page.imageItems || [];
-        imageItems.forEach(imageItem => {
-          if (!imageItem.placeholder) return;
-          
-          // Skip if already processed through imageReferences or not in the text
-          if (!pageText.includes(imageItem.placeholder)) return;
-          
-          // Find the analysis result for this image
-          const analysisText = imageAnalysisMap.get(imageItem.id) || combinedImageMap.get(imageItem.id);
-          
-          // Determine if this is a full page scan
-          const isFullPage = imageItem.placeholder.includes('PAGE_IMAGE_');
-          
-          if (analysisText) {
-            // Create a replacement with appropriate header based on image type
-            const headerText = isFullPage 
-              ? `\n==== FULL PAGE SCAN ANALYSIS ====\n` 
-              : `\n---- IMAGE ANALYSIS START ----\n`;
-            
-            const footerText = isFullPage 
-              ? `\n==== END OF PAGE SCAN ANALYSIS ====\n` 
-              : `\n---- IMAGE ANALYSIS END ----\n`;
-            
-            const replacement = `${headerText}${analysisText}${footerText}`;
-            
-            // Replace all occurrences of the placeholder
-            pageText = pageText.replaceAll(imageItem.placeholder, replacement);
-          }
-        });
-      }
-      
-      // 3. Search for standard placeholder patterns from pdfUtils.js
-      // For regular images: [IMAGE_{number}] 
-      // For page scans: [PAGE_IMAGE_{number}]
-      if (pdfData.images) {
-        // Find images belonging to this page
-        const pageImages = pdfData.images.filter(img => img.pageNumber === page.pageNumber);
-        
-        pageImages.forEach(image => {
-          const imageId = image.id;
-          const analysisText = imageAnalysisMap.get(imageId) || combinedImageMap.get(imageId);
-          
-          if (!analysisText) return;
-          
-          // Try to match regular image placeholder pattern
-          if (image.id.startsWith('img_')) {
-            // Parse the counter number from img_{page}_{counter}
-            const parts = image.id.split('_');
-            if (parts.length >= 3) {
-              const counter = parts[2];
-              const standardPattern = `[IMAGE_${counter}]`;
-              
-              if (pageText.includes(standardPattern)) {
-                // Create a replacement for standard image
-                const replacement = `\n---- IMAGE ANALYSIS START ----\n${analysisText}\n---- IMAGE ANALYSIS END ----\n`;
-                
-                // Replace all occurrences of the placeholder
-                pageText = pageText.replaceAll(standardPattern, replacement);
-              }
-            }
-          }
-          
-          // Try to match page scan placeholder pattern
-          if (image.id.startsWith('page_')) {
-            // Parse the page number from page_{number}
-            const parts = image.id.split('_');
-            if (parts.length >= 2) {
-              const pageNum = parts[1];
-              const scanPattern = `[PAGE_IMAGE_${pageNum}]`;
-              
-              if (pageText.includes(scanPattern)) {
-                // Create a distinctive replacement for full page scans
-                const replacement = `\n==== FULL PAGE SCAN ANALYSIS ====\n${analysisText}\n==== END OF PAGE SCAN ANALYSIS ====\n`;
-                
-                // Replace all occurrences of the placeholder
-                pageText = pageText.replaceAll(scanPattern, replacement);
-              }
-            }
-          }
-          
-          // Last attempt: try a generic pattern with the full ID
-          const genericPattern = `[IMAGE: ${imageId}]`;
-          if (pageText.includes(genericPattern)) {
-            // Determine if this is a full page scan based on ID
-            const isFullPage = imageId.startsWith('page_');
-            
-            // Create appropriate replacement
-            const headerText = isFullPage 
-              ? `\n==== FULL PAGE SCAN ANALYSIS ====\n` 
-              : `\n---- IMAGE ANALYSIS START ----\n`;
-            
-            const footerText = isFullPage 
-              ? `\n==== END OF PAGE SCAN ANALYSIS ====\n` 
-              : `\n---- IMAGE ANALYSIS END ----\n`;
-            
-            const replacement = `${headerText}${analysisText}${footerText}`;
-            
-            // Replace all occurrences of the placeholder
-            pageText = pageText.replaceAll(genericPattern, replacement);
-          }
-        });
-      }
-      
-      return {
-        pageNumber: page.pageNumber,
-        text: pageText || "No text content available for this page."
-      };
-    });
-    
-    setCombinedText(processedPages);
+    // Store the replacement data
+    setReplacementData(replacement);
     setIsLoading(false);
+  };
+
+  // Function to count successful analyses
+  const countSuccessfulAnalyses = () => {
+    if (!analysisResults) return 0;
+    return analysisResults.filter(r => r.success && !r.refusalDetected).length;
+  };
+
+  // Function to count refusals
+  const countRefusals = () => {
+    if (!analysisResults) return 0;
+    return analysisResults.filter(r => r.refusalDetected).length;
   };
 
   return (
@@ -230,12 +83,15 @@ function TextReplacementViewer({ pdfData, analysisResults }) {
             )}
             {analysisResults && (
               <p>
-                <strong>Analysis:</strong> {analysisResults.filter(r => r.success).length} of {analysisResults.length} images analyzed
+                <strong>Analysis:</strong> {countSuccessfulAnalyses()} successful, 
+                {countRefusals() > 0 && <span> {countRefusals()} refusals,</span>} 
+                {analysisResults.length - countSuccessfulAnalyses() - countRefusals()} failed
               </p>
             )}
           </div>
           
-          {combinedText.map((page) => (
+          {/* Page-by-page view */}
+          {replacementData && replacementData.pages.map((page) => (
             <div 
               key={page.pageNumber} 
               style={{ 
@@ -259,12 +115,45 @@ function TextReplacementViewer({ pdfData, analysisResults }) {
                   overflow: 'auto'
                 }}
               >
-                {page.text}
+                {page.content}
               </pre>
             </div>
           ))}
           
-          {combinedText.length === 0 && !error && !isLoading && (
+          {/* Raw data expandable section */}
+          {replacementData && (
+            <div style={{ marginTop: '30px', marginBottom: '20px' }}>
+              <details>
+                <summary style={{ 
+                  cursor: 'pointer', 
+                  padding: '10px', 
+                  backgroundColor: '#f0f0f0',
+                  borderRadius: '4px',
+                  fontWeight: 'bold'
+                }}>
+                  View Raw Replacement Data
+                </summary>
+                <div style={{ 
+                  marginTop: '10px', 
+                  backgroundColor: '#f5f5f5', 
+                  padding: '15px', 
+                  borderRadius: '4px', 
+                  maxHeight: '500px', 
+                  overflowY: 'auto'
+                }}>
+                  <pre style={{ 
+                    whiteSpace: 'pre-wrap', 
+                    fontSize: '12px',
+                    overflow: 'auto' 
+                  }}>
+                    {JSON.stringify(replacementData, null, 2)}
+                  </pre>
+                </div>
+              </details>
+            </div>
+          )}
+          
+          {!replacementData && !error && !isLoading && (
             <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
               <p>No text content available to display.</p>
             </div>
