@@ -533,8 +533,7 @@ async function processPdfDocument(pdfData, options = {}) {
           rawText: '',    // Plain text without placeholders
           formattedText: '' // Text with image placeholders
         },
-        imageReferences: [], // References to images on this page
-        imageItems: []    // Actual image items for this page (added for compatibility with TextReplacementViewer)
+        imageReferences: [] // References to images on this page (simplified structure)
       };
       
       // Get text content and viewport
@@ -699,8 +698,23 @@ async function processPdfDocument(pdfData, options = {}) {
         }
       }
       
-      // After organizing content, store imageItems in pageObj for TextReplacementViewer
-      pageObj.imageItems = imageItems.slice();
+      // Organize the content
+      const content = organizeContent({
+        textContent,
+        viewport,
+        imageItems,
+        pageScan: (pageObj.isScanned && pageScan) ? pageScan : null
+      });
+      
+      // Update the page content
+      pageObj.content = content;
+      
+      // Make sure page scan placeholders are always included
+      if (pageScan && !pageObj.content.formattedText.includes(pageScan.placeholder)) {
+        // If page content doesn't already have the placeholder, add it at the beginning
+        pageObj.content.formattedText = pageScan.placeholder + 
+          (pageObj.content.formattedText ? '\n\n' + pageObj.content.formattedText : '');
+      }
       
       // Add page to result
       result.pages.push(pageObj);
@@ -746,11 +760,11 @@ async function processPdfDocument(pdfData, options = {}) {
     for (const [originalId, refInfo] of pageImageRef.entries()) {
       const { pageNum, placeholder, x, y, isFullPage, pageScan, pageObj, imageItems } = refInfo;
       
-      // Get the new ID and index for this image
+      // Get the new ID for this image
       const imageInfo = idMapping.get(originalId);
       if (!imageInfo) continue;
       
-      const { newId, index } = imageInfo;
+      const { newId } = imageInfo;
       
       // Check if this image (by newId) has already been added to this page
       if (!pageImageTracker.has(pageNum)) {
@@ -767,11 +781,10 @@ async function processPdfDocument(pdfData, options = {}) {
       // Mark this image as added to this page
       pageImages.add(newId);
       
-      // Add reference to the page
+      // Add reference to the page (simplified structure without index)
       pageObj.imageReferences.push({
         id: newId, // Use new ID (might be combined)
         placeholder,
-        index,
         isFullPage: !!isFullPage
       });
       
@@ -780,7 +793,7 @@ async function processPdfDocument(pdfData, options = {}) {
         pageScan.id = newId;
       }
       
-      // Add to image items for content organization (even for full page scans)
+      // Still use imageItems for content organization, but don't store it in page objects
       if (imageItems) {
         // Always create a content item for the image, regardless of whether it's a full page scan
         imageItems.push(createContentItem({
@@ -798,7 +811,7 @@ async function processPdfDocument(pdfData, options = {}) {
       const pageNum = pageObj.pageNumber;
       
       // Find all image items for this page
-      const imageItems = [];
+      const imageItems = []; // Temporary array only used for content organization
       
       // Find the page scan if any
       let pageScan = null;
@@ -820,8 +833,8 @@ async function processPdfDocument(pdfData, options = {}) {
             placeholder: ref.placeholder
           }));
         } else {
-          // Find the image to get its position
-          const image = result.images[ref.index];
+          // Find the image by id to get its position
+          const image = result.images.find(img => img.id === ref.id);
           if (image && image.position) {
             imageItems.push(createContentItem({
               type: 'image',
@@ -856,9 +869,6 @@ async function processPdfDocument(pdfData, options = {}) {
         pageObj.content.formattedText = pageScan.placeholder + 
           (pageObj.content.formattedText ? '\n\n' + pageObj.content.formattedText : '');
       }
-      
-      // Ensure the imageItems array is consistent with imageReferences
-      pageObj.imageItems = imageItems;
     }
     
     // Log deduplication results

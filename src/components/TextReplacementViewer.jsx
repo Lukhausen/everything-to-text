@@ -84,36 +84,39 @@ function TextReplacementViewer({ pdfData, analysisResults }) {
         });
       }
       
-      // 2. Process imageItems if available
-      const imageItems = page.imageItems || [];
-      imageItems.forEach(imageItem => {
-        if (!imageItem.placeholder) return;
-        
-        // Skip if already processed through imageReferences
-        if (!pageText.includes(imageItem.placeholder)) return;
-        
-        // Find the analysis result for this image
-        const analysisText = imageAnalysisMap.get(imageItem.id) || combinedImageMap.get(imageItem.id);
-        
-        // Determine if this is a full page scan
-        const isFullPage = imageItem.placeholder.includes('PAGE_IMAGE_');
-        
-        if (analysisText) {
-          // Create a replacement with appropriate header based on image type
-          const headerText = isFullPage 
-            ? `\n==== FULL PAGE SCAN ANALYSIS ====\n` 
-            : `\n---- IMAGE ANALYSIS START ----\n`;
+      // 2. Process any remaining references not handled by imageReferences
+      // This step may be redundant now but we keep it for backward compatibility
+      if (page.imageItems) {
+        const imageItems = page.imageItems || [];
+        imageItems.forEach(imageItem => {
+          if (!imageItem.placeholder) return;
           
-          const footerText = isFullPage 
-            ? `\n==== END OF PAGE SCAN ANALYSIS ====\n` 
-            : `\n---- IMAGE ANALYSIS END ----\n`;
+          // Skip if already processed through imageReferences or not in the text
+          if (!pageText.includes(imageItem.placeholder)) return;
           
-          const replacement = `${headerText}${analysisText}${footerText}`;
+          // Find the analysis result for this image
+          const analysisText = imageAnalysisMap.get(imageItem.id) || combinedImageMap.get(imageItem.id);
           
-          // Replace all occurrences of the placeholder
-          pageText = pageText.replaceAll(imageItem.placeholder, replacement);
-        }
-      });
+          // Determine if this is a full page scan
+          const isFullPage = imageItem.placeholder.includes('PAGE_IMAGE_');
+          
+          if (analysisText) {
+            // Create a replacement with appropriate header based on image type
+            const headerText = isFullPage 
+              ? `\n==== FULL PAGE SCAN ANALYSIS ====\n` 
+              : `\n---- IMAGE ANALYSIS START ----\n`;
+            
+            const footerText = isFullPage 
+              ? `\n==== END OF PAGE SCAN ANALYSIS ====\n` 
+              : `\n---- IMAGE ANALYSIS END ----\n`;
+            
+            const replacement = `${headerText}${analysisText}${footerText}`;
+            
+            // Replace all occurrences of the placeholder
+            pageText = pageText.replaceAll(imageItem.placeholder, replacement);
+          }
+        });
+      }
       
       // 3. Search for standard placeholder patterns from pdfUtils.js
       // For regular images: [IMAGE_{number}] 

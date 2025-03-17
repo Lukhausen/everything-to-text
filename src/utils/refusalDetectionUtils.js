@@ -43,7 +43,7 @@ export async function detectRefusal(responseText, apiKey, options = {}) {
           },
           {
             role: "user",
-            content: `Please analyze the following AI response and determine if it contains a refusal to answer. Only respond with 'true' if it's a refusal, or 'false' if it's not a refusal.\n\nAI response: "${responseText}"`
+            content: `Please analyze the following AI response and determine if it contains a refusal to answer or expresses the inability to to analyze iamges. Only respond with 'true' if it's a refusal, or 'false' if it's not a refusal.\n\nAI response: "${responseText}"`
           }
         ],
         temperature: options.temperature || 0.1,
