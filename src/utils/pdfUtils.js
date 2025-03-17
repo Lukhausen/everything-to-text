@@ -478,7 +478,8 @@ async function processPdfDocument(pdfData, options = {}) {
       pages: [],
       images: [],
       skippedObjects: [], // Track skipped objects
-      originalImageCount: 0 // Track the original number of images before deduplication
+      originalImageCount: 0, // Track the original number of images before deduplication
+      progress: { current: 0, total: 0 } // Track processing progress
     };
     
     const startTime = performance.now();
@@ -501,11 +502,13 @@ async function processPdfDocument(pdfData, options = {}) {
         pages: [],
         images: [],
         totalPages: 0,
-        processingTime: 0
+        processingTime: 0,
+        progress: { current: 0, total: 0 }
       };
     }
     
     result.totalPages = pdf.numPages;
+    result.progress.total = pdf.numPages;
     
     onLog(`PDF loaded successfully. Pages: ${pdf.numPages}`);
     
@@ -515,8 +518,10 @@ async function processPdfDocument(pdfData, options = {}) {
     const pageImageRef = new Map(); // To update references after deduplication
     
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      // Update progress
+      result.progress.current = pageNum;
       onProgress(pageNum / pdf.numPages);
-      onLog(`Processing page ${pageNum}/${pdf.numPages}`);
+      onLog(`Processing page ${pageNum}/${pdf.numPages} (${Math.round((pageNum / pdf.numPages) * 100)}% complete)`);
       
       const page = await pdf.getPage(pageNum);
       
@@ -528,7 +533,8 @@ async function processPdfDocument(pdfData, options = {}) {
           rawText: '',    // Plain text without placeholders
           formattedText: '' // Text with image placeholders
         },
-        imageReferences: [] // References to images on this page
+        imageReferences: [], // References to images on this page
+        imageItems: []    // Actual image items for this page (added for compatibility with TextReplacementViewer)
       };
       
       // Get text content and viewport
@@ -693,7 +699,10 @@ async function processPdfDocument(pdfData, options = {}) {
         }
       }
       
-      // Add page object to results for now (we'll build content after deduplication)
+      // After organizing content, store imageItems in pageObj for TextReplacementViewer
+      pageObj.imageItems = imageItems.slice();
+      
+      // Add page to result
       result.pages.push(pageObj);
     }
     
@@ -771,8 +780,9 @@ async function processPdfDocument(pdfData, options = {}) {
         pageScan.id = newId;
       }
       
-      // Add to image items for content organization if not a page scan
-      if (!isFullPage && imageItems) {
+      // Add to image items for content organization (even for full page scans)
+      if (imageItems) {
+        // Always create a content item for the image, regardless of whether it's a full page scan
         imageItems.push(createContentItem({
           type: 'image',
           id: newId,
@@ -800,6 +810,15 @@ async function processPdfDocument(pdfData, options = {}) {
             id: ref.id,
             placeholder: ref.placeholder
           };
+          
+          // For full page scans, also add to imageItems to ensure it appears in content
+          imageItems.push(createContentItem({
+            type: 'image',
+            id: ref.id,
+            x: 0,
+            y: 0,
+            placeholder: ref.placeholder
+          }));
         } else {
           // Find the image to get its position
           const image = result.images[ref.index];
@@ -831,10 +850,15 @@ async function processPdfDocument(pdfData, options = {}) {
       // Update the page content
       pageObj.content = content;
       
-      // Special case: empty page with scan - just use the image placeholder without explanatory text
-      if (content.rawText === '' && pageScan) {
-        pageObj.content.formattedText = pageScan.placeholder;
+      // Make sure page scan placeholders are always included
+      if (pageScan && !pageObj.content.formattedText.includes(pageScan.placeholder)) {
+        // If page content doesn't already have the placeholder, add it at the beginning
+        pageObj.content.formattedText = pageScan.placeholder + 
+          (pageObj.content.formattedText ? '\n\n' + pageObj.content.formattedText : '');
       }
+      
+      // Ensure the imageItems array is consistent with imageReferences
+      pageObj.imageItems = imageItems;
     }
     
     // Log deduplication results
@@ -846,22 +870,24 @@ async function processPdfDocument(pdfData, options = {}) {
     }
     
     // Calculate total processing time
-    result.processingTime = performance.now() - startTime;
-    result.imageCount = result.images.length;
+    const endTime = performance.now();
+    result.processingTime = endTime - startTime;
+    result.progress.current = result.progress.total; // Ensure progress is complete
     
-    onLog(`Processing complete. Found ${result.images.length} unique images across ${result.totalPages} pages.`);
-    onProgress(1);
+    onLog(`Processing complete. ${result.pages.length} pages processed in ${Math.round(result.processingTime)}ms`);
+    onLog(`Found ${result.images.length} unique images (from ${result.originalImageCount} original images)`);
     
     return result;
   } catch (error) {
     console.error('Error processing PDF:', error);
     return {
       success: false,
-      error: error.message || 'Unknown error',
+      error: `Error processing PDF: ${error.message}`,
       pages: [],
       images: [],
       totalPages: 0,
-      processingTime: 0
+      processingTime: 0,
+      progress: { current: 0, total: 0 }
     };
   }
 }
