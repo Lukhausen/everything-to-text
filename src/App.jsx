@@ -79,6 +79,9 @@ function App() {
   // API key checking
   const [apiKeySet, setApiKeySet] = useState(false)
   
+  // Track if we've navigated away from upload step
+  const [hasNavigatedFromUpload, setHasNavigatedFromUpload] = useState(false);
+  
   const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)')
 
   // Create theme with dark mode support and orange primary color
@@ -192,43 +195,6 @@ function App() {
     setAutoProgress(value)
   }, [])
 
-  // Handle PDF processing completion
-  const handlePdfProcessingComplete = useCallback((result) => {
-    setPdfResult(result)
-    setIsProcessing(false)
-    
-    // Update the processing step to indicate we've completed step 1
-    setProcessingStep(Math.max(processingStep, 2))
-    
-    // Start analysis immediately if auto progress is on
-    if (autoProgress) {
-      startAnalysis(result)
-    }
-  }, [autoProgress, processingStep]);
-  
-  // Handle analysis completion
-  const handleAnalysisComplete = useCallback((result) => {
-    setAnalysisResult(result)
-    setIsProcessing(false)
-    
-    // Update the processing step to indicate we've completed step 2
-    setProcessingStep(Math.max(processingStep, 3))
-  }, [processingStep]);
-  
-  // Function to start the PDF processing
-  const startPdfProcessing = useCallback(() => {
-    if (selectedFile && !pdfResult && !isProcessing) {
-      setIsProcessing(true)
-      // Processing will begin when ExtractGraphics component mounts
-      setProcessingStep(Math.max(processingStep, 1))
-      
-      // If user hasn't manually navigated, take them to the processing step
-      if (!touched) {
-        setActiveStep(1);
-      }
-    }
-  }, [selectedFile, pdfResult, isProcessing, processingStep, touched]);
-  
   // Function to start the image analysis
   const startAnalysis = useCallback((pdfData) => {
     const pdfToAnalyze = pdfData || pdfResult
@@ -243,6 +209,65 @@ function App() {
       }
     }
   }, [pdfResult, analysisResult, isProcessing, processingStep, touched]);
+
+  // Handle PDF processing completion
+  const handlePdfProcessingComplete = useCallback((result) => {
+    setPdfResult(result)
+    setIsProcessing(false)
+    
+    // Update the processing step
+    const newProcessingStep = 2
+    setProcessingStep(Math.max(processingStep, newProcessingStep))
+    
+    // Check if there are any images to analyze
+    const hasImages = result && result.images && result.images.length > 0
+    
+    // If there are no images, we should skip the analysis step
+    if (!hasImages) {
+      // Set analysis result with empty images array to indicate completion
+      const emptyAnalysisResult = {
+        ...result,
+        imageAnalysisResults: [],
+        extractedText: 'No images found in the PDF to analyze.'
+      }
+      setAnalysisResult(emptyAnalysisResult)
+      
+      // Also update the processing step to indicate we've completed analysis
+      setProcessingStep(Math.max(processingStep, 3))
+      
+      // If auto-progress is on and we're currently in step 1 or 2,
+      // move directly to the Results step
+      if (autoProgress && !touched && (activeStep === 1 || activeStep === 2)) {
+        setActiveStep(3) // Jump to Results step
+      }
+    } else if (autoProgress) {
+      // Normal flow - start analysis immediately if auto progress is on
+      startAnalysis(result)
+    }
+  }, [autoProgress, processingStep, touched, activeStep, startAnalysis]);
+
+  // Function to start the PDF processing
+  const startPdfProcessing = useCallback(() => {
+    if (selectedFile && !pdfResult && !isProcessing) {
+      setIsProcessing(true)
+      // Processing will begin when ExtractGraphics component mounts
+      setProcessingStep(Math.max(processingStep, 1))
+      
+      // If user hasn't manually navigated, take them to the processing step
+      if (!touched) {
+        setActiveStep(1);
+      }
+    }
+  }, [selectedFile, pdfResult, isProcessing, processingStep, touched]);
+  
+  // Handle analysis completion
+  const handleAnalysisComplete = useCallback((result) => {
+    setAnalysisResult(result)
+    setIsProcessing(false)
+    
+    // Update the processing step to indicate we've completed step 2
+    setProcessingStep(Math.max(processingStep, 3))
+  }, [processingStep]);
   
   // Determine if processing is needed
   const needsProcessing = useMemo(() => {
@@ -312,6 +337,11 @@ function App() {
       // Set touched flag to true since user manually selected a step
       setTouched(true);
       
+      // Track first navigation away from upload step
+      if (activeStep === 0 && step !== 0 && !hasNavigatedFromUpload) {
+        setHasNavigatedFromUpload(true);
+      }
+      
       // Record the time of this manual selection
       setLastStepSelectionTime(Date.now());
       
@@ -358,11 +388,26 @@ function App() {
     
     const nextStep = activeStep + 1;
     
+    // Track first navigation away from upload step
+    if (activeStep === 0 && !hasNavigatedFromUpload) {
+      setHasNavigatedFromUpload(true);
+    }
+    
     // Check if API key is set before proceeding beyond first step
     if (nextStep > 0 && !apiKeySet) {
       setSnackbarMessage("Please add a valid OpenAI API key in the Settings section. Your key will be validated automatically when entered correctly.");
       setSnackbarOpen(true);
       return;
+    }
+    
+    // Special case for moving from Extract to Analyze
+    // If there are no images, skip the Analyze step and go directly to Results
+    if (activeStep === 1 && nextStep === 2 && pdfResult && (!pdfResult.images || pdfResult.images.length === 0)) {
+      // We have PDF result but no images - skip to Results
+      if (isStepAccessible(3)) {
+        setActiveStep(3); // Jump to Results
+        return;
+      }
     }
     
     // If moving to extraction step, start processing if needed
@@ -384,12 +429,16 @@ function App() {
   }
 
   const handleReset = () => {
+    // First reset all processing-related states
     setActiveStep(0)
     setSelectedFile(null)
     setFileKey(null)
     setPdfResult(null)
     setAnalysisResult(null)
     setIsProcessing(false)
+    setProcessingStep(0) // Reset processing step to 0
+    setTouched(false) // Reset touched state
+    setHasNavigatedFromUpload(false)
   }
 
   // Helper to find the highest step the user has reached
@@ -449,43 +498,59 @@ function App() {
               onFileSelect={handleFileSelect} 
               onDebugModeChange={handleDebugModeChange}
               onAutoProgressChange={handleAutoProgressChange}
+              hasNavigatedAway={hasNavigatedFromUpload}
             />
           </>
         )
       case 1:
-        // For visible components, we'll now either show a status or the full component
-        return <ExtractGraphics 
-                 pdfFile={selectedFile} 
-                 onComplete={handlePdfProcessingComplete}
-                 skipProcessing={!needsProcessing || !!pdfResult}
-                 existingResults={pdfResult}
-                 debugMode={debugMode}
-               />
+        // Only show extraction component if we have a file to process
+        return selectedFile ? (
+          <ExtractGraphics 
+            pdfFile={selectedFile} 
+            onComplete={handlePdfProcessingComplete}
+            skipProcessing={!needsProcessing || !!pdfResult}
+            existingResults={pdfResult}
+            debugMode={debugMode}
+          />
+        ) : (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+            <Typography>Please upload a PDF file first</Typography>
+          </Box>
+        )
       case 2:
-        // Show the analysis component with the right mode
-        return processingStep >= 2 ? 
-               <AnalyzeGraphics
-                 pdfResult={pdfResult}
-                 onComplete={handleAnalysisComplete}
-                 skipAnalysis={!needsAnalysis || !!analysisResult}
-                 existingResults={analysisResult}
-                 debugMode={debugMode}
-               /> :
-               <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-                 <Typography>Please complete the extraction process first</Typography>
-               </Box>
+        // Only show analysis component if we have PDF results
+        return pdfResult ? (
+          <AnalyzeGraphics
+            pdfResult={pdfResult}
+            onComplete={handleAnalysisComplete}
+            skipAnalysis={!needsAnalysis || !!analysisResult}
+            existingResults={analysisResult}
+            debugMode={debugMode}
+          />
+        ) : (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+            <Typography>Please complete the extraction process first</Typography>
+          </Box>
+        )
       case 3:
-        return processingStep >= 3 ?
-               <Results 
-                 pdfResult={pdfResult}
-                 analysisResult={analysisResult}
-                 debugMode={debugMode}
-               /> :
-               <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-                 <Typography>Please complete the analysis process first</Typography>
-               </Box>
+        // Only show results if we have analysis results
+        return analysisResult ? (
+          <Results 
+            pdfResult={pdfResult}
+            analysisResult={analysisResult}
+            debugMode={debugMode}
+          />
+        ) : (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+            <Typography>Please complete the analysis process first</Typography>
+          </Box>
+        )
       default:
-        return 'Unknown step'
+        return (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+            <Typography>Unknown step</Typography>
+          </Box>
+        )
     }
   }
 
@@ -522,12 +587,20 @@ function App() {
     // Current step and previous steps should always be accessible if their data is available
     if (stepIndex <= activeStep) {
       if (stepIndex === 1) return !!selectedFile;
-      if (stepIndex === 2) return !!pdfResult;
+      if (stepIndex === 2) {
+        // Only make Analyze step accessible if we have images to analyze
+        const hasImages = pdfResult && pdfResult.images && pdfResult.images.length > 0;
+        return !!pdfResult && hasImages;
+      }
       if (stepIndex === 3) return !!analysisResult;
     } else {
-      // For future steps, keep the original logic
+      // For future steps, keep the original logic but with image check
       if (stepIndex === 1) return !!selectedFile;
-      if (stepIndex === 2) return !!pdfResult;
+      if (stepIndex === 2) {
+        // Only make Analyze step accessible if we have images to analyze
+        const hasImages = pdfResult && pdfResult.images && pdfResult.images.length > 0;
+        return !!pdfResult && hasImages;
+      }
       if (stepIndex === 3) return !!analysisResult;
     }
     
@@ -542,7 +615,14 @@ function App() {
     if (stepIndex > 0 && !apiKeySet) return 'Please add a valid OpenAI API key in the Settings section';
     
     if (stepIndex === 1) return 'Please upload a PDF file first';
-    if (stepIndex === 2) return 'Please complete the image extraction process first';
+    
+    if (stepIndex === 2) {
+      if (pdfResult && (!pdfResult.images || pdfResult.images.length === 0)) {
+        return 'No images found in the PDF - this step is skipped';
+      }
+      return 'Please complete the image extraction process first';
+    }
+    
     if (stepIndex === 3) return 'Please complete the image analysis process first';
     
     return '';
@@ -586,20 +666,21 @@ function App() {
       <Box
         sx={{
           minHeight: '100vh',
-          p: { xs: 0, sm: 2 }, // No padding on mobile, normal padding on larger screens
+          p: { xs: 0, sm: 2 },
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
+          position: 'relative', // Add this to help with footer positioning
         }}
       >
         <Paper
           elevation={3}
           sx={{
-            p: { xs: 2, sm: 3 }, // Less padding on mobile
+            p: { xs: 2, sm: 3 },
             width: '100%',
             maxWidth: '800px',
             mb: 2,
-            borderRadius: { xs: 0, sm: 2 }, // No border radius on mobile for full width appearance
+            borderRadius: { xs: 0, sm: 2 },
           }}
         >
           <Typography variant="h4" component="h1" gutterBottom align="center">
@@ -674,7 +755,12 @@ function App() {
                           </Box>
                         ) : isStepComplete ? (
                           <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.5 }}>
-                            <Typography variant="caption" color="text.primary" sx={{ opacity: 0.7 }}>Complete</Typography>
+                            {/* Show "Skipped: No images" for analyze step when there are no images */}
+                            {index === 2 && pdfResult && (!pdfResult.images || pdfResult.images.length === 0) ? (
+                              <Typography variant="caption" color="text.primary" sx={{ opacity: 0.7 }}>Skipped: No images</Typography>
+                            ) : (
+                              <Typography variant="caption" color="text.primary" sx={{ opacity: 0.7 }}>Complete</Typography>
+                            )}
                           </Box>
                         ) : isActiveComplete ? (
                           // Don't show anything for active completed steps
@@ -754,6 +840,53 @@ function App() {
             {snackbarMessage}
           </Alert>
         </Snackbar>
+
+        {/* Footer */}
+        <Box
+          component="footer"
+          sx={{
+            width: '100%',
+            maxWidth: '800px',
+            mt: 'auto',
+            mb: 2,
+            display: 'flex',
+            justifyContent: 'center',
+          }}
+        >
+          <Box
+            component="a"
+            href="https://lukhausen.de"
+            target="_blank"
+            rel="noopener noreferrer"
+            sx={{
+              color: 'text.secondary',
+              textDecoration: 'none',
+              fontFamily: 'monospace',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              transition: 'all 0.3s ease',
+              '&:hover': {
+                color: 'primary.main',
+                transform: 'translateY(-2px)',
+                '& .comment': {
+                  color: 'primary.main',
+                },
+              },
+            }}
+          >
+            <Typography
+              variant="body2"
+              className="comment"
+              sx={{
+                fontFamily: 'monospace',
+                transition: 'color 0.3s ease',
+              }}
+            >
+              // Made by Lukas instead of learning for his exam 📚🤓
+            </Typography>
+          </Box>
+        </Box>
       </Box>
     </ThemeProvider>
   )

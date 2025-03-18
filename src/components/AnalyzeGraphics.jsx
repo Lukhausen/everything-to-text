@@ -130,6 +130,21 @@ export default function AnalyzeGraphics({
       return;
     }
     
+    // Skip if there are no images to analyze
+    if (!pdfResult.images || pdfResult.images.length === 0) {
+      setError("No images found in the PDF to analyze.");
+      // Set processing as complete with empty results
+      const emptyResult = {
+        ...pdfResult,
+        imageAnalysisResults: [],
+        extractedText: "No images found in the PDF to analyze."
+      };
+      setAnalysisResult(emptyResult);
+      setProcessingComplete(true);
+      onComplete(emptyResult);
+      return;
+    }
+    
     const analyzeImages = async () => {
       // Set processing flag to prevent duplicate calls
       processingRef.current = true;
@@ -150,13 +165,6 @@ export default function AnalyzeGraphics({
         // Initialize total images count
         const totalImageCount = pdfResult.images.length;
         setTotalImages(totalImageCount);
-        
-        if (totalImageCount === 0) {
-          setError("No images found in the PDF to analyze.");
-          setIsProcessing(false);
-          processingRef.current = false;
-          return;
-        }
         
         // Log start of processing
         addLogMessage(`Starting analysis of ${totalImageCount} images...`);
