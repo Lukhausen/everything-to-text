@@ -1,551 +1,470 @@
-import { useState, useEffect } from 'react';
-import Stepper from './components/Stepper';
-import FileUploader from './components/FileUploader';
-import ImageGrid from './components/ImageGrid';
-import ProgressBar from './components/ProgressBar';
-import Button from './components/Button';
-import TextResult from './components/TextResult';
-import APIKeyInput from './components/ApiKeyInput';
-import AdvancedSettings from './components/AdvancedSettings';
-import { processPdfDocument } from './utils/pdfUtils';
-import { processBatchImages, extractTextFromBatchResults } from './utils/batchImageAnalysisUtils';
-import { createTextReplacement } from './utils/textReplacementUtils';
-import './styles/global.css';
-import './App.css';
+import { useState, useCallback, useMemo, useEffect } from 'react'
+import { 
+  ThemeProvider, 
+  createTheme, 
+  CssBaseline,
+  Stepper,
+  Step,
+  StepLabel,
+  StepContent,
+  Button,
+  Paper,
+  Typography,
+  Box,
+  Tooltip,
+  Snackbar,
+  Alert,
+  useMediaQuery
+} from '@mui/material'
+import FileUpload from './components/FileUpload'
+import ExtractGraphics from './components/ExtractGraphics'
+import AnalyzeGraphics from './components/AnalyzeGraphics'
+import Results from './components/Results'
 
-// More detailed steps with sub-steps for processing
-const STEPS = [
-  { name: 'Upload' },
-  { name: 'Extract Graphics' },
-  { name: 'Analyze Graphics' },
-  { name: 'Result' }
-];
-
-// Default advanced settings for image processing
-const DEFAULT_ADVANCED_SETTINGS = {
-  processing: {
-    maxConcurrentRequests: 100,  // Process up to 100 images simultaneously
-    maxRefusalRetries: 3,
-    temperature: 0.7,
-    model: "gpt-4o-mini",
-  }
-};
+// Define the steps for our process
+const steps = [
+  {
+    label: 'Select File',
+    description: 'Upload a PDF file and configure settings',
+  },
+  {
+    label: 'Extract Graphics',
+    description: 'Extracting and processing graphics from your PDF',
+  },
+  {
+    label: 'Analyze Graphics',
+    description: 'Analyzing extracted graphics with AI',
+  },
+  {
+    label: 'Results',
+    description: 'View the analysis results',
+  },
+]
 
 function App() {
-  // Application state
-  const [currentStep, setCurrentStep] = useState(1);
-  const [maxCompletedStep, setMaxCompletedStep] = useState(1); // Track furthest step reached
-  const [apiKey, setApiKey] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [pdfData, setPdfData] = useState(null);
-  const [extractedImages, setExtractedImages] = useState([]);
-  const [processedImageIds, setProcessedImageIds] = useState([]);
-  const [refusedImageIds, setRefusedImageIds] = useState([]);
-  const [extractedText, setExtractedText] = useState('');
-  const [error, setError] = useState(null);
-  const [progressStage, setProgressStage] = useState(''); // To show which processing stage we're in
-  const [currentPage, setCurrentPage] = useState(0); // Current page being processed
-  const [totalPages, setTotalPages] = useState(0); // Total pages in the PDF
-  const [advancedSettings, setAdvancedSettings] = useState(DEFAULT_ADVANCED_SETTINGS); // Advanced settings state
+  const [activeStep, setActiveStep] = useState(0)
   
-  // Effect to update maxCompletedStep whenever currentStep advances
-  useEffect(() => {
-    if (currentStep > maxCompletedStep) {
-      setMaxCompletedStep(currentStep);
-    }
-  }, [currentStep, maxCompletedStep]);
+  // File state
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [fileKey, setFileKey] = useState(null) // Unique identifier for the current file
   
-  // Store API key in localStorage
+  // Processing state and results
+  const [pdfResult, setPdfResult] = useState(null)
+  const [analysisResult, setAnalysisResult] = useState(null)
+  const [isProcessing, setIsProcessing] = useState(false)
+  
+  // Debug mode
+  const [debugMode, setDebugMode] = useState(false)
+  
+  // Notification state
+  const [snackbarOpen, setSnackbarOpen] = useState(false)
+  const [snackbarMessage, setSnackbarMessage] = useState('')
+  
+  // API key checking
+  const [apiKeySet, setApiKeySet] = useState(false)
+  
+  const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)')
+
+  // Create theme with dark mode support and orange primary color
+  const theme = createTheme({
+    palette: {
+      mode: prefersDarkMode ? 'dark' : 'dark', // Force dark mode
+      primary: {
+        main: '#ff9800', // Material-UI orange
+        light: '#ffb74d',
+        dark: '#f57c00',
+        contrastText: '#000',
+      },
+      background: {
+        default: '#121212',
+        paper: '#1e1e1e',
+      },
+    },
+    components: {
+      MuiStepper: {
+        styleOverrides: {
+          root: {
+            width: '100%',
+            maxWidth: '800px',
+            margin: '0 auto',
+          },
+        },
+      },
+      // Ensure buttons have good contrast with orange
+      MuiButton: {
+        styleOverrides: {
+          contained: {
+            color: '#000', // Black text on orange background
+          },
+        },
+      },
+    },
+  })
+
+  // Initialize default settings
   useEffect(() => {
-    const storedApiKey = localStorage.getItem('openai_api_key');
-    if (storedApiKey) {
-      setApiKey(storedApiKey);
+    // Set default model if not already set
+    if (!localStorage.getItem('pdf_processor_model')) {
+      localStorage.setItem('pdf_processor_model', 'gpt-4o-mini')
     }
     
-    // Also load saved settings if available
-    const storedSettings = localStorage.getItem('advanced_settings');
-    if (storedSettings) {
-      try {
-        const parsedSettings = JSON.parse(storedSettings);
-        setAdvancedSettings(parsedSettings);
-      } catch (e) {
-        console.error('Failed to parse stored settings:', e);
-      }
+    // Set default concurrent requests if not already set
+    if (!localStorage.getItem('pdf_processor_max_requests')) {
+      localStorage.setItem('pdf_processor_max_requests', '100')
     }
+  }, [])
+
+  // Check if API key exists and is validated in localStorage
+  useEffect(() => {
+    const checkApiKey = () => {
+      const apiKey = localStorage.getItem('pdf_processor_api_key');
+      const apiKeyValidated = localStorage.getItem('pdf_processor_api_key_validated') === 'true';
+      setApiKeySet(!!(apiKey && apiKey.trim() !== '' && apiKeyValidated));
+    };
+    
+    // Check initially
+    checkApiKey();
+    
+    // Set up an interval to check periodically (in case user adds API key in another tab)
+    const interval = setInterval(checkApiKey, 1000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // Handle file selection
+  const handleFileSelect = useCallback((file) => {
+    if (!file) {
+      // If file is cleared, reset all state
+      setSelectedFile(null)
+      setFileKey(null)
+      setPdfResult(null)
+      return
+    }
+    
+    // Generate a unique key for this file based on name, size, and last modified date
+    const newFileKey = `${file.name}-${file.size}-${file.lastModified}`;
+    
+    // Only reset the pdfResult if this is a different file
+    if (newFileKey !== fileKey) {
+      setPdfResult(null);
+      setSelectedFile(file);
+      setFileKey(newFileKey);
+    }
+  }, [fileKey]);
+
+  // Handle debug mode change
+  const handleDebugModeChange = useCallback((isDebugMode) => {
+    setDebugMode(isDebugMode);
+  }, []);
+
+  // Handle PDF processing completion
+  const handlePdfProcessingComplete = useCallback((result) => {
+    setPdfResult(result)
+    setIsProcessing(false)
   }, []);
   
-  // Save API key to localStorage when it changes
-  useEffect(() => {
-    if (apiKey) {
-      localStorage.setItem('openai_api_key', apiKey);
-    }
-  }, [apiKey]);
+  // Handle analysis completion
+  const handleAnalysisComplete = useCallback((result) => {
+    setAnalysisResult(result)
+    setIsProcessing(false)
+  }, []);
   
-  // Save advanced settings to localStorage when they change
-  useEffect(() => {
-    localStorage.setItem('advanced_settings', JSON.stringify(advancedSettings));
-  }, [advancedSettings]);
+  // Determine if processing is needed
+  const needsProcessing = useMemo(() => {
+    return selectedFile && !pdfResult && activeStep === 1;
+  }, [selectedFile, pdfResult, activeStep]);
   
-  // Handle settings changes
-  const handleSettingsChange = (newSettings) => {
-    setAdvancedSettings(newSettings);
-  };
-  
-  // Handle file selection and automatically start processing
-  const handleFileSelected = (file) => {
-    setSelectedFile(file);
-    // Reset state when a new file is selected
-    setPdfData(null);
-    setExtractedImages([]);
-    setProcessedImageIds([]);
-    setRefusedImageIds([]);
-    setExtractedText('');
-    setError(null);
-    setCurrentPage(0);
-    setTotalPages(0);
-    setMaxCompletedStep(1); // Reset max completed step
-    
-    // If API key is already present, start processing automatically
-    if (apiKey) {
-      handleProcessPdf(file);
-    }
-  };
-  
-  // Reset the entire process
-  const handleReset = () => {
-    setCurrentStep(1);
-    setMaxCompletedStep(1); // Reset max completed step
-    setSelectedFile(null);
-    setPdfData(null);
-    setExtractedImages([]);
-    setProcessedImageIds([]);
-    setRefusedImageIds([]);
-    setExtractedText('');
-    setError(null);
-    setIsProcessing(false);
-    setProgress(0);
-    setProgressStage('');
-    setCurrentPage(0);
-    setTotalPages(0);
-  };
-  
-  // Handle API key change and start processing if file already selected
-  const handleApiKeyChange = (newKey) => {
-    setApiKey(newKey);
-    
-    // If file is already selected and this is a valid API key, start processing
-    if (selectedFile && newKey && newKey.length > 10) {
-      handleProcessPdf(selectedFile);
-    }
-  };
-  
-  // Process PDF to extract images
-  const handleProcessPdf = async (fileToProcess) => {
-    const fileToUse = fileToProcess || selectedFile;
-    if (!fileToUse || !apiKey) return;
-    
-    setError(null);
-    setIsProcessing(true);
-    setProgress(0);
-    setCurrentStep(2); // Move to Extract Graphics step
-    setProgressStage('Extracting images from PDF');
-    
-    try {
-      // Read the file
-      const fileArrayBuffer = await fileToUse.arrayBuffer();
-      
-      // Process PDF document
-      const result = await processPdfDocument(fileArrayBuffer, {
-        onProgress: (progress) => {
-          setProgress(progress * 100);
-        },
-        onLog: (message) => {
-          console.log(message);
-          
-          // Check for page processing messages to update the counter
-          const pageMatch = message.match(/Processing page (\d+) of (\d+)/);
-          if (pageMatch) {
-            setCurrentPage(parseInt(pageMatch[1], 10));
-            setTotalPages(parseInt(pageMatch[2], 10));
-          }
-        }
-      });
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to process PDF');
-      }
-      
-      // Store PDF data and extracted images
-      setPdfData(result);
-      setExtractedImages(result.images || []);
-      
-      // Update total pages if not set by log messages
-      if (totalPages === 0 && result.totalPages) {
-        setTotalPages(result.totalPages);
-      }
-      
-      // Start image analysis automatically after a brief pause
-      if (result.images && result.images.length > 0) {
-        // Small delay to show the extracted images before starting analysis
-        setTimeout(() => {
-          setCurrentStep(3); // Move to Analyze Graphics step
-          handleAnalyzeImages(result, result.images);
-        }, 500);
-      }
-    } catch (err) {
-      console.error('Error processing PDF:', err);
-      setError(`Failed to process PDF: ${err.message}`);
-      setIsProcessing(false);
-    }
-  };
-  
-  // Analyze extracted images
-  const handleAnalyzeImages = async (pdfDataToUse, imagesToProcess) => {
-    const pdfToUse = pdfDataToUse || pdfData;
-    const imagesToUse = imagesToProcess || extractedImages;
-    
-    if (!pdfToUse || !imagesToUse.length || !apiKey) return;
-    
-    setProgressStage('Analyzing images with AI');
-    setProgress(0);
-    setProcessedImageIds([]);
-    setRefusedImageIds([]);
-    
-    try {
-      // Process batch images with user's advanced settings
-      const result = await processBatchImages(
-        { ...pdfToUse, images: imagesToUse },
-        apiKey,
-        advancedSettings.processing, // Use the user's settings here
-        {
-          onProgress: (status) => {
-            setProgress(status.progressPercentage || 0);
-          },
-          onImageProcessed: (result) => {
-            console.log('Image processed:', result);
-            
-            if (result.success) {
-              if (result.refusalDetected) {
-                setRefusedImageIds(prevIds => [...prevIds, result.imageId]);
-                console.log(`Image ${result.imageId} was refused by AI`);
-              } else {
-                setProcessedImageIds(prevIds => [...prevIds, result.imageId]);
-              }
-            }
-          },
-          onError: (error) => {
-            console.error('Image processing error:', error);
-          },
-          onComplete: (results) => {
-            console.log('All images processed:', results);
-            
-            let extracted;
-            if (pdfToUse.pages && pdfToUse.pages.length > 0) {
-              const textReplacement = createTextReplacement(pdfToUse, results);
-              console.log('Text replacement result:', textReplacement);
-              
-              if (textReplacement.success) {
-                const combinedText = textReplacement.pages
-                  .map(page => `--- PAGE ${page.pageNumber} ---\n\n${page.content}\n\n`)
-                  .join('');
-                
-                setExtractedText(combinedText);
-              } else {
-                extracted = extractTextFromBatchResults(results, pdfToUse);
-                setExtractedText(extracted.extractedText || '');
-              }
-            } else {
-              extracted = extractTextFromBatchResults(results, pdfToUse);
-              setExtractedText(extracted.extractedText || '');
-            }
-            
-            setCurrentStep(4); // Move to Result step (now step 4)
-            setIsProcessing(false);
-          }
-        }
-      );
-      
-      console.log('Processing complete with result:', result);
-    } catch (err) {
-      console.error('Error analyzing images:', err);
-      setError(`Failed to analyze images: ${err.message}`);
-      setIsProcessing(false);
-    }
-  };
-  
-  // Handle cancel operation
-  const handleCancel = () => {
-    setIsProcessing(false);
-    setProgress(0);
-    setProgressStage('');
-    
-    // Go back to the upload step
-    setCurrentStep(1);
-  };
-  
-  // Handle step click for navigation
-  const handleStepClick = (step) => {
-    // If processing is in progress, don't allow navigation
-    if (isProcessing) {
-      return;
-    }
-    
-    // Don't re-set the current step if we're already on it
-    if (step === currentStep) {
-      return;
-    }
+  // Determine if analysis is needed
+  const needsAnalysis = useMemo(() => {
+    return pdfResult && !analysisResult && activeStep === 2;
+  }, [pdfResult, analysisResult, activeStep]);
 
-    // Handle setting appropriate UI state based on step
-    if (step === 1) {
-      // Going to Upload step
-      setProgressStage('');
-      setProgress(0);
-    } else if (step === 2 && extractedImages.length > 0) {
-      // Going to Extract Graphics (showing completed extraction)
-      setProgressStage('Extraction complete');
-      setProgress(100);
-    } else if (step === 3) {
-      // Going to Analyze Graphics
-      if (processedImageIds.length > 0 || refusedImageIds.length > 0) {
-        // If analysis was completed, show that
-        setProgressStage('Analysis complete');
-        setProgress(100);
-      } else if (extractedImages.length > 0) {
-        // If just extraction was completed
-        setProgressStage('Ready to analyze images');
-        setProgress(0);
-      }
-    } else if (step === 4 && extractedText) {
-      // Going to Result (already have results)
-      setProgressStage('');
-      setProgress(100);
+  const handleNext = () => {
+    const nextStep = activeStep + 1;
+    
+    // Check if API key is set before proceeding beyond first step
+    if (nextStep > 0 && !apiKeySet) {
+      setSnackbarMessage("Please add a valid API key in the Settings section. Your key will be validated automatically when entered correctly.");
+      setSnackbarOpen(true);
+      return;
     }
     
-    // Update current step
-    setCurrentStep(step);
-  };
-  
-  // Render step content based on current step
-  const renderStepContent = () => {
-    switch (currentStep) {
-      case 1: // Upload
-  return (
-          <>
-            <FileUploader 
-              onFileSelected={handleFileSelected} 
-              isUploading={isProcessing}
-              uploadProgress={progress}
-            />
-            
-            {!isProcessing && (
-              <>
-                <APIKeyInput value={apiKey} onChange={handleApiKeyChange} />
-                <AdvancedSettings
-                  settings={advancedSettings}
-                  onSettingsChange={handleSettingsChange}
-                />
-              </>
-            )}
-            
-            {selectedFile && !apiKey && (
-              <div className="step-actions">
-                <Button 
-                  variant="primary" 
-                  onClick={() => handleProcessPdf()}
-                  disabled={!selectedFile || !apiKey || isProcessing}
-                  isLoading={isProcessing}
-                  fullWidth
-                >
-                  {isProcessing ? 'Processing...' : 'Process PDF'}
-                </Button>
-              </div>
-            )}
-          </>
-        );
-        
-      case 2: // Extract Graphics
-        return (
-          <>
-            <div className="step-info">
-              <p>{progressStage}</p>
-              {totalPages > 0 && (
-                <p className="page-counter">
-                  {currentPage > 0 ? `Page ${currentPage}/${totalPages}` : totalPages > 1 ? `${totalPages} pages` : '1 page'}
-                </p>
-              )}
-              <ProgressBar progress={progress} />
-            </div>
-            
-            {extractedImages.length > 0 && (
-              <ImageGrid 
-                images={extractedImages} 
-                processedImages={[]}
-                refusedImages={[]}
-                isProcessing={isProcessing}
-              />
-            )}
-            
-            <div className="step-actions">
-              {isProcessing ? (
-                <Button 
-                  variant="danger" 
-                  onClick={handleCancel}
-                >
-                  Cancel
-                </Button>
-              ) : (
-                <>
-                  <Button 
-                    variant="secondary" 
-                    onClick={() => handleStepClick(1)}
-                  >
-                    Back
-                  </Button>
-                  {maxCompletedStep >= 3 && (
-                    <Button 
-                      variant="primary" 
-                      onClick={() => handleStepClick(3)}
-                    >
-                      Continue
-                    </Button>
-                  )}
-                </>
-              )}
-        </div>
-          </>
-        );
-        
-      case 3: // Analyze Graphics
-        return (
-          <>
-            <div className="step-info">
-              <p>{progressStage}</p>
-              <ProgressBar 
-                progress={progress} 
-                label={processedImageIds.length > 0 || refusedImageIds.length > 0 
-                  ? `${processedImageIds.length + refusedImageIds.length} of ${extractedImages.length} images processed (${refusedImageIds.length} refused)` 
-                  : undefined} 
-              />
-      </div>
-      
-            {extractedImages.length > 0 && (
-              <ImageGrid 
-                images={extractedImages} 
-                processedImages={processedImageIds}
-                refusedImages={refusedImageIds}
-                isProcessing={isProcessing}
-              />
-            )}
-            
-            <div className="step-actions">
-              {isProcessing ? (
-                <Button 
-                  variant="danger" 
-                  onClick={handleCancel}
-                >
-                  Cancel
-                </Button>
-              ) : (
-                <>
-                  <Button 
-                    variant="secondary" 
-                    onClick={() => handleStepClick(2)}
-                  >
-                    Back
-                  </Button>
-                  {maxCompletedStep >= 4 && (
-                    <Button 
-                      variant="primary" 
-                      onClick={() => handleStepClick(4)}
-                    >
-                      Continue
-                    </Button>
-                  )}
-                  {maxCompletedStep < 4 && extractedImages.length > 0 && processedImageIds.length === 0 && refusedImageIds.length === 0 && (
-                    <Button 
-                      variant="primary" 
-                      onClick={() => handleAnalyzeImages()}
-                    >
-                      Start Analysis
-                    </Button>
-                  )}
-                </>
-              )}
-            </div>
-          </>
-        );
-        
-      case 4: // Result (now step 4)
-        return (
-          <>
-            <TextResult 
-              text={extractedText} 
-              fileName={selectedFile?.name || 'document'}
-            />
-            
-            <div className="step-actions">
-              <Button 
-                variant="secondary" 
-                onClick={() => handleStepClick(3)}
-              >
-                Back
-              </Button>
-              <Button 
-                variant="primary" 
-                onClick={handleReset}
-              >
-                Process New File
-              </Button>
-            </div>
-          </>
-        );
-        
-      default:
-        return null;
+    if (nextStep < steps.length && isStepAccessible(nextStep)) {
+      setActiveStep(nextStep);
+    } else if (nextStep < steps.length) {
+      // If next step is not accessible, show notification
+      setSnackbarMessage(getStepTooltip(nextStep));
+      setSnackbarOpen(true);
     }
-  };
+  }
+
+  const handleBack = () => {
+    // Always allow going back one step
+    setActiveStep((prevActiveStep) => prevActiveStep - 1);
+  }
+
+  const handleReset = () => {
+    setActiveStep(0)
+    setSelectedFile(null)
+    setFileKey(null)
+    setPdfResult(null)
+    setAnalysisResult(null)
+    setIsProcessing(false)
+  }
+
+  // Get content for current step
+  const getStepContent = (step) => {
+    switch (step) {
+      case 0:
+        return (
+          <>
+            {!apiKeySet && (
+              <Alert 
+                severity="warning" 
+                sx={{ 
+                  mb: 3,
+                  '& .MuiAlert-icon': {
+                    color: 'primary.main'
+                  }
+                }}
+              >
+                Please add a valid API key in the Settings section below before continuing. 
+                Your API key will be validated automatically when entered correctly.
+              </Alert>
+            )}
+            <FileUpload 
+              onFileSelect={handleFileSelect} 
+              onDebugModeChange={handleDebugModeChange}
+            />
+          </>
+        )
+      case 1:
+        return <ExtractGraphics 
+                 pdfFile={selectedFile} 
+                 onComplete={handlePdfProcessingComplete}
+                 skipProcessing={!needsProcessing && pdfResult}
+                 existingResults={pdfResult}
+                 debugMode={debugMode}
+               />
+      case 2:
+        return <AnalyzeGraphics
+                 pdfResult={pdfResult}
+                 onComplete={handleAnalysisComplete}
+                 skipAnalysis={!needsAnalysis && analysisResult}
+                 existingResults={analysisResult}
+                 debugMode={debugMode}
+               />
+      case 3:
+        return <Results 
+                 pdfResult={pdfResult}
+                 analysisResult={analysisResult}
+                 debugMode={debugMode}
+               />
+      default:
+        return 'Unknown step'
+    }
+  }
+
+  // Determine if the Next button should be disabled
+  const isNextDisabled = (step) => {
+    // First, check if API key is set - required for all steps except the first one
+    if (step > 0 && !apiKeySet) {
+      return true;
+    }
+    
+    switch(step) {
+      case 0:
+        return !selectedFile // Disabled if no file selected
+      case 1:
+        return !pdfResult    // Disabled if PDF processing not complete
+      case 2:
+        return !analysisResult // Disabled if image analysis not complete
+      case 3:
+        return false // Final step, no next button needed
+      default:
+        return false
+    }
+  }
   
+  // Determine if a step is clickable/accessible
+  const isStepAccessible = (stepIndex) => {
+    // First step is always accessible
+    if (stepIndex === 0) return true;
+    
+    // API key is required for all steps beyond the first
+    if (!apiKeySet) return false;
+    
+    // Steps in sequence
+    if (stepIndex === 1) return !!selectedFile;
+    if (stepIndex === 2) return !!pdfResult;
+    if (stepIndex === 3) return !!analysisResult;
+    
+    return false;
+  }
+  
+  // Handle step click
+  const handleStepClick = (step) => {
+    // Only allow clicking on steps that are accessible
+    if (isStepAccessible(step)) {
+      setActiveStep(step);
+    } else {
+      // Show notification with reason why step can't be accessed
+      setSnackbarMessage(getStepTooltip(step));
+      setSnackbarOpen(true);
+    }
+  }
+  
+  // Get tooltip message for inaccessible steps
+  const getStepTooltip = (stepIndex) => {
+    if (isStepAccessible(stepIndex)) return '';
+    
+    // API key check takes precedence
+    if (stepIndex > 0 && !apiKeySet) return 'Please add a valid API key in the Settings section';
+    
+    if (stepIndex === 1) return 'Please select a file first';
+    if (stepIndex === 2) return 'Please complete the extraction process first';
+    if (stepIndex === 3) return 'Please complete the analysis process first';
+    
+    return '';
+  }
+  
+  // Close snackbar
+  const handleSnackbarClose = (event, reason) => {
+    if (reason === 'clickaway') {
+      return;
+    }
+    setSnackbarOpen(false);
+  };
+
   return (
-    <div className="app-container">
-      <header className="app-header">
-        <h1>Everything to Text</h1>
-        <p>Extract and analyze text from any PDF</p>
-      </header>
-      
-      <main className="content-card">
-        <Stepper 
-          currentStep={currentStep} 
-          steps={STEPS} 
-          onStepClick={handleStepClick}
-          isProcessing={isProcessing}
-          maxCompletedStep={maxCompletedStep}
-        />
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Box
+        sx={{
+          minHeight: '100vh',
+          p: 2,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+        }}
+      >
+        <Paper
+          elevation={3}
+          sx={{
+            p: 3,
+            width: '100%',
+            maxWidth: '800px',
+            mb: 2,
+          }}
+        >
+          <Typography variant="h4" component="h1" gutterBottom align="center">
+            AI PDF to Text
+          </Typography>
+          <Stepper 
+            activeStep={activeStep} 
+            orientation="vertical"
+            sx={{
+              mt: 3,
+              '& .MuiStepLabel-root': {
+                py: 1,
+              },
+            }}
+          >
+            {steps.map((step, index) => (
+              <Step key={step.label}>
+                <Tooltip 
+                  title={getStepTooltip(index)}
+                  placement="right"
+                  disableHoverListener={isStepAccessible(index)}
+                >
+                  <StepLabel 
+                    sx={{ 
+                      cursor: isStepAccessible(index) ? 'pointer' : 'default',
+                      opacity: isStepAccessible(index) ? 1 : 0.7,
+                      '&:hover': isStepAccessible(index) ? {
+                        '.MuiStepLabel-label': {
+                          color: 'primary.main',
+                        },
+                        '.MuiStepIcon-root': {
+                          color: 'primary.main',
+                        }
+                      } : {},
+                      transition: 'all 0.2s ease-in-out',
+                    }}
+                    onClick={() => handleStepClick(index)}
+                  >
+                    <Typography variant="subtitle1">{step.label}</Typography>
+                  </StepLabel>
+                </Tooltip>
+                <StepContent>
+                  <Typography color="text.secondary" paragraph>
+                    {step.description}
+                  </Typography>
+                  {getStepContent(index)}
+                  <Box sx={{ mb: 2, mt: 2 }}>
+                    <div>
+                      <Button
+                        variant="contained"
+                        onClick={handleNext}
+                        sx={{ mt: 1, mr: 1 }}
+                        disabled={isNextDisabled(index)}
+                      >
+                        {index === steps.length - 1 ? 'Finish' : 'Continue'}
+                      </Button>
+                      <Button
+                        disabled={index === 0}
+                        onClick={handleBack}
+                        sx={{ mt: 1, mr: 1 }}
+                      >
+                        Back
+                      </Button>
+                      {index === steps.length - 1 && (
+                        <Button
+                          onClick={handleReset}
+                          sx={{ mt: 1, mr: 1 }}
+                        >
+                          Start Over
+                        </Button>
+                      )}
+                    </div>
+                  </Box>
+                </StepContent>
+              </Step>
+            ))}
+          </Stepper>
+          {activeStep === steps.length && (
+            <Paper square elevation={0} sx={{ p: 3 }}>
+              <Typography>All steps completed - you&apos;re finished</Typography>
+              <Button onClick={handleReset} sx={{ mt: 1, mr: 1 }}>
+                Start Over
+              </Button>
+            </Paper>
+          )}
+        </Paper>
         
-        {error && (
-          <div className="error-message">
-            {error}
-            <button 
-              className="clear-error" 
-              onClick={() => setError(null)}
-              aria-label="Clear error"
-            >
-              ×
-            </button>
-          </div>
-        )}
-        
-        <div className="step-content">
-          {renderStepContent()}
-        </div>
-      </main>
-      
-      <footer className="app-footer">
-        <p>Powered by OpenAI • All processing happens in your browser</p>
-      </footer>
-    </div>
-  );
+        {/* Notification for inaccessible steps */}
+        <Snackbar 
+          open={snackbarOpen} 
+          autoHideDuration={4000} 
+          onClose={handleSnackbarClose}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        >
+          <Alert 
+            onClose={handleSnackbarClose} 
+            severity="info" 
+            sx={{ 
+              width: '100%',
+              '& .MuiAlert-icon': {
+                color: 'primary.main'
+              }
+            }}
+          >
+            {snackbarMessage}
+          </Alert>
+        </Snackbar>
+      </Box>
+    </ThemeProvider>
+  )
 }
 
-export default App;
+export default App 
