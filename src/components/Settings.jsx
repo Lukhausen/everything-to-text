@@ -35,7 +35,8 @@ const STORAGE_KEYS = {
   MODEL: 'pdf_processor_model',
   MAX_REQUESTS: 'pdf_processor_max_requests',
   SHOW_ADVANCED: 'pdf_processor_show_advanced',
-  DEBUG_MODE: 'pdf_processor_debug_mode'
+  DEBUG_MODE: 'pdf_processor_debug_mode',
+  AUTO_PROGRESS: 'pdf_processor_auto_progress'
 }
 
 // Helper function to safely parse stored numbers
@@ -58,7 +59,7 @@ const maskApiKey = (key) => {
   return key.slice(0, 4) + '•'.repeat(key.length - 8) + key.slice(-4)
 }
 
-export default function Settings({ onDebugModeChange }) {
+export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(STORAGE_KEYS.API_KEY) || '')
   const [showApiKey, setShowApiKey] = useState(false)
   const [model, setModel] = useState(() => localStorage.getItem(STORAGE_KEYS.MODEL) || 'gpt-4o-mini')
@@ -70,6 +71,9 @@ export default function Settings({ onDebugModeChange }) {
   )
   const [debugMode, setDebugMode] = useState(() => 
     safeParseBoolean(localStorage.getItem(STORAGE_KEYS.DEBUG_MODE), false)
+  )
+  const [autoProgress, setAutoProgress] = useState(() => 
+    safeParseBoolean(localStorage.getItem(STORAGE_KEYS.AUTO_PROGRESS), true)
   )
   
   // API key validation states
@@ -120,6 +124,14 @@ export default function Settings({ onDebugModeChange }) {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.API_KEY_VALIDATED, isKeyValidated.toString())
   }, [isKeyValidated])
+
+  // Save auto progress setting to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.AUTO_PROGRESS, autoProgress.toString())
+    if (onAutoProgressChange) {
+      onAutoProgressChange(autoProgress)
+    }
+  }, [autoProgress, onAutoProgressChange])
   
   // Handle API key validation
   const validateApiKey = async (key) => {
@@ -194,9 +206,10 @@ export default function Settings({ onDebugModeChange }) {
 
   return (
     <Stack spacing={3} width="100%">
+      <Typography>API Key</Typography>
       <TextField
         fullWidth
-        label="API Key"
+        label="OpenAI API Key"
         value={showApiKey ? apiKey : maskApiKey(apiKey)}
         onChange={(e) => handleApiKeyChange(e.target.value)}
         type={showApiKey ? 'text' : 'password'}
@@ -205,7 +218,7 @@ export default function Settings({ onDebugModeChange }) {
         helperText={
           validationStatus === 'invalid' 
             ? validationError 
-            : "Your API key is stored locally in your browser and never sent to any external server"
+            : "Your OpenAI API key is stored locally in your browser only and never sent to any external server"
         }
         FormHelperTextProps={{
           sx: {
@@ -280,17 +293,17 @@ export default function Settings({ onDebugModeChange }) {
                 }
               }}
             >
-              <MenuItem value="gpt-4o-mini">GPT-4o Mini (Default, Faster)</MenuItem>
-              <MenuItem value="gpt-4o">GPT-4o (More Accurate)</MenuItem>
+              <MenuItem value="gpt-4o-mini">GPT-4o Mini (Faster, Less Costly)</MenuItem>
+              <MenuItem value="gpt-4o">GPT-4o (More Accurate, Higher Quality)</MenuItem>
             </Select>
             <FormHelperText>
-              GPT-4o Mini is recommended for most images. Use GPT-4o for complex images or detailed analysis.
+              GPT-4o Mini is recommended for most documents. Use GPT-4o for more detailed analysis of complex images.
             </FormHelperText>
           </FormControl>
 
           <Box>
             <Typography gutterBottom>
-              Max Concurrent Requests: {maxConcurrentRequests}
+              Maximum Concurrent Requests: {maxConcurrentRequests}
             </Typography>
             <Slider
               value={maxConcurrentRequests}
@@ -325,6 +338,26 @@ export default function Settings({ onDebugModeChange }) {
             <FormControlLabel
               control={
                 <Switch
+                  checked={autoProgress}
+                  onChange={(e) => setAutoProgress(e.target.checked)}
+                  color="primary"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body2">Automatic Progress</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Automatically advance to next step when current step is complete
+                  </Typography>
+                </Box>
+              }
+            />
+          </FormControl>
+          
+          <FormControl component="fieldset" variant="standard">
+            <FormControlLabel
+              control={
+                <Switch
                   checked={debugMode}
                   onChange={(e) => setDebugMode(e.target.checked)}
                   color="primary"
@@ -332,9 +365,9 @@ export default function Settings({ onDebugModeChange }) {
               }
               label={
                 <Box>
-                  <Typography variant="body2">Show Debug Info</Typography>
+                  <Typography variant="body2">Debug Mode</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Enables processing logs and raw data inspection
+                    Display processing logs and access raw data viewer
                   </Typography>
                 </Box>
               }

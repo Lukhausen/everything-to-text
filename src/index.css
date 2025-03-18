@@ -4,13 +4,17 @@
   font-weight: 400;
 
   color-scheme: dark;
-  background-color: #121212;
   color: rgba(255, 255, 255, 0.87);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+
+  
+
+
 }
 
 * {
@@ -35,8 +39,30 @@ body {
   }
   
   .MuiButton-root {
-    width: 100%;
-    margin-top: 8px !important;
+    padding: 6px 16px !important;
+  }
+  
+  /* Full-width components on mobile */
+  .MuiPaper-root {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+  
+  /* Better spacing for mobile */
+  .MuiStack-root {
+    padding: 0 !important;
+  }
+  
+  /* Make buttons more tap-friendly */
+  .MuiIconButton-root {
+    padding: 8px !important;
+  }
+  
+  /* Improve form field spacing */
+  .MuiTextField-root {
+    margin-bottom: 12px !important;
   }
 }
 

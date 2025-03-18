@@ -186,9 +186,9 @@ export default function AnalyzeGraphics({
             addLogMessage(`Processed image ${result.imageId}: ${
               result.success 
                 ? result.refusalDetected 
-                  ? 'Refusal detected'
+                  ? 'No content available'
                   : 'Success'
-                : 'Failed'
+                : 'No content available'
             }`);
             
             // Update success/failure counts
@@ -280,16 +280,16 @@ export default function AnalyzeGraphics({
       
       <Paper
         sx={{
-          p: 3,
+          p: { xs: 2, sm: 3 },
           bgcolor: 'background.paper',
-          borderRadius: 2,
+          borderRadius: { xs: 1, sm: 2 },
         }}
       >
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h6">
             {skipAnalysis && existingResults 
-              ? "Graphics Already Analyzed" 
-              : "Analyzing Graphics with AI"}
+              ? "Images Already Analyzed" 
+              : "Analyzing Images with AI"}
           </Typography>
           
           {/* Debug button - only show when in debug mode */}
@@ -361,7 +361,7 @@ export default function AnalyzeGraphics({
           
           <Box>
             <Typography variant="body2" color="text.secondary">
-              Successful
+              Successfully Analyzed
             </Typography>
             <Typography variant="h6" color="success.main">
               {successfulImages}
@@ -370,7 +370,7 @@ export default function AnalyzeGraphics({
           
           <Box>
             <Typography variant="body2" color="text.secondary">
-              Failed/Refused
+              No Content Available
             </Typography>
             <Typography variant="h6" color="warning.main">
               {failedImages + refusalCount}
@@ -403,7 +403,7 @@ export default function AnalyzeGraphics({
         }}
       >
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h6">Images Gallery</Typography>
+          <Typography variant="h6">Image Gallery</Typography>
         </Box>
         
         <Box sx={{ 
@@ -507,8 +507,21 @@ export default function AnalyzeGraphics({
                             </Tooltip>
                           )}
                           
-                          {(isRefused || isFailed) && (
-                            <Tooltip title={isRefused ? "AI refused to analyze" : "Analysis failed"}>
+                          {isRefused && (
+                            <Tooltip title="No content could be extracted">
+                              <InfoIcon 
+                                sx={{ 
+                                  color: 'warning.main',
+                                  backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                                  borderRadius: '50%',
+                                  padding: '2px'
+                                }} 
+                              />
+                            </Tooltip>
+                          )}
+                          
+                          {isFailed && (
+                            <Tooltip title="No content could be extracted">
                               <InfoIcon 
                                 sx={{ 
                                   color: 'warning.main',
@@ -543,19 +556,19 @@ export default function AnalyzeGraphics({
                       
                       {isRefused && (
                         <Typography variant="body2" color="warning.main" sx={{ fontSize: '0.75rem' }}>
-                          AI refused analysis
+                          No Content Available
                         </Typography>
                       )}
                       
                       {isFailed && (
                         <Typography variant="body2" color="error.main" sx={{ fontSize: '0.75rem' }}>
-                          Failed
+                          No Content Available
                         </Typography>
                       )}
                       
                       {!isProcessed && (
                         <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem', fontStyle: 'italic' }}>
-                          Waiting...
+                          Waiting for analysis...
                         </Typography>
                       )}
                     </CardContent>
@@ -608,7 +621,7 @@ export default function AnalyzeGraphics({
             ) : (
               <ListItem>
                 <ListItemText 
-                  primary="Waiting for processing to start..." 
+                  primary="Waiting for processing to begin..." 
                   primaryTypographyProps={{ 
                     variant: 'body2',
                     sx: { fontStyle: 'italic' }

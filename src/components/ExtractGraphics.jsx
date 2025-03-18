@@ -164,7 +164,19 @@ export default function ExtractGraphics({
             const result = await processPdfDocument(pdfData, options);
             
             if (result.success) {
-              setPdfResult(result);
+              // Preserve the original filename from the uploaded file
+              const enrichedResult = {
+                ...result,
+                originalFilename: pdfFile.name,  // Store the original filename
+                name: pdfFile.name,              // Compatibility with existing code
+                file: {                          // Add file info for compatibility
+                  name: pdfFile.name,
+                  type: pdfFile.type,
+                  size: pdfFile.size
+                }
+              };
+              
+              setPdfResult(enrichedResult);
               setTotalPages(result.totalPages);
               
               // Set the final image count based on the result
@@ -172,7 +184,7 @@ export default function ExtractGraphics({
               setProcessingComplete(true);
               
               // Notify parent component of completion
-              onComplete(result);
+              onComplete(enrichedResult);
             } else {
               setError(result.error || 'An error occurred while processing the PDF');
             }
@@ -223,16 +235,16 @@ export default function ExtractGraphics({
       
       <Paper
         sx={{
-          p: 3,
+          p: { xs: 2, sm: 3 },
           bgcolor: 'background.paper',
-          borderRadius: 2,
+          borderRadius: { xs: 1, sm: 2 },
         }}
       >
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h6">
             {skipProcessing && existingResults 
               ? "Graphics Already Extracted" 
-              : "Extracting Graphics from PDF"}
+              : "Extracting Images from PDF"}
           </Typography>
           
           {/* Debug button - only show when in debug mode */}
@@ -295,7 +307,7 @@ export default function ExtractGraphics({
         >
           <Box>
             <Typography variant="body2" color="text.secondary">
-              Pages
+              Pages Processed
             </Typography>
             <Typography variant="h6">
               {currentPage} / {totalPages || '?'}
@@ -304,7 +316,7 @@ export default function ExtractGraphics({
           
           <Box>
             <Typography variant="body2" color="text.secondary">
-              Images Found
+              Images Detected
             </Typography>
             <Typography variant="h6">
               {imagesFound}
@@ -361,7 +373,7 @@ export default function ExtractGraphics({
             ) : (
               <ListItem>
                 <ListItemText 
-                  primary="Waiting for processing to start..." 
+                  primary="Waiting for processing to begin..." 
                   primaryTypographyProps={{ 
                     variant: 'body2',
                     sx: { fontStyle: 'italic' }

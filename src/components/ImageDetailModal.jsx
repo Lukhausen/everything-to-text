@@ -91,7 +91,7 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
             {isRefused && (
               <Chip 
                 icon={<InfoIcon fontSize="small" />} 
-                label="AI refused to analyze"
+                label="No Content Available"
                 color="warning"
                 size="small"
               />
@@ -100,7 +100,7 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
             {isFailed && (
               <Chip 
                 icon={<InfoIcon fontSize="small" />} 
-                label="Analysis failed"
+                label="No Content Available"
                 color="error"
                 size="small"
               />
@@ -182,11 +182,11 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
               </Typography>
             ) : isRefused ? (
               <Typography variant="body2" color="warning.main">
-                The AI model refused to analyze this image due to content policy restrictions.
+                No content could be extracted from this image.
               </Typography>
             ) : isFailed ? (
               <Typography variant="body2" color="error.main">
-                Analysis failed: {analysis.error || 'Unknown error'}
+                No content could be extracted from this image.
               </Typography>
             ) : (
               <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>

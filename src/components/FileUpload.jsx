@@ -15,14 +15,14 @@ import {
 } from '@mui/icons-material'
 import Settings from './Settings'
 
-export default function FileUpload({ onFileSelect, onDebugModeChange }) {
+export default function FileUpload({ onFileSelect, onDebugModeChange, onAutoProgressChange }) {
   const [file, setFile] = useState(null)
   const [error, setError] = useState(null)
 
   const onDrop = useCallback((acceptedFiles) => {
     const selectedFile = acceptedFiles[0]
     if (selectedFile?.type !== 'application/pdf') {
-      setError('Please upload a PDF file')
+      setError('Please upload a PDF file only')
       return
     }
     setFile(selectedFile)
@@ -62,10 +62,10 @@ export default function FileUpload({ onFileSelect, onDebugModeChange }) {
       <Paper
         {...getRootProps()}
         sx={{
-          p: 3,
+          p: { xs: 2, sm: 3 },
           border: '2px dashed',
           borderColor: isDragActive ? 'primary.main' : 'grey.500',
-          borderRadius: 2,
+          borderRadius: { xs: 1, sm: 2 },
           bgcolor: 'background.paper',
           cursor: 'pointer',
           transition: 'all 0.2s ease',
@@ -90,7 +90,8 @@ export default function FileUpload({ onFileSelect, onDebugModeChange }) {
               <PdfIcon sx={{ color: 'primary.main' }} />
               <Typography>{file.name}</Typography>
               <IconButton 
-                size="small" 
+                size="small"
+                aria-label="Remove selected file" 
                 onClick={(e) => {
                   e.stopPropagation()
                   handleDelete()
@@ -107,14 +108,17 @@ export default function FileUpload({ onFileSelect, onDebugModeChange }) {
           ) : (
             <Typography align="center" color="text.secondary">
               {isDragActive
-                ? 'Drop your PDF file here'
-                : 'Drag and drop your PDF file here, or click to select'}
+                ? 'Release to upload your PDF file'
+                : 'Drag and drop a PDF file here, or click to browse files'}
             </Typography>
           )}
         </Box>
       </Paper>
 
-      <Settings onDebugModeChange={onDebugModeChange} />
+      <Settings 
+        onDebugModeChange={onDebugModeChange} 
+        onAutoProgressChange={onAutoProgressChange}
+      />
     </Stack>
   )
 } 

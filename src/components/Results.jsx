@@ -125,11 +125,26 @@ export default function Results({
     const a = document.createElement('a')
     a.href = url
     
-    // Use the original file name if available
-    const fileName = pdfResult && pdfResult.name 
-      ? `${pdfResult.name.replace(/\.pdf$/i, '')}.txt` 
-      : 'analyzed-document.txt'
-      
+    // Get the original filename from the PDF result
+    let fileName = 'extracted-text.txt'
+    
+    if (pdfResult) {
+      // First try the specific originalFilename property we've added
+      if (pdfResult.originalFilename) {
+        fileName = pdfResult.originalFilename.replace(/\.pdf$/i, '') + '.txt'
+      }
+      // Fallback to other possible name properties
+      else if (pdfResult.name) {
+        fileName = pdfResult.name.replace(/\.pdf$/i, '') + '.txt'
+      } 
+      else if (pdfResult.filename) {
+        fileName = pdfResult.filename.replace(/\.pdf$/i, '') + '.txt'
+      } 
+      else if (pdfResult.file && pdfResult.file.name) {
+        fileName = pdfResult.file.name.replace(/\.pdf$/i, '') + '.txt'
+      }
+    }
+    
     a.download = fileName
     document.body.appendChild(a)
     a.click()
@@ -159,9 +174,9 @@ export default function Results({
       
       <Paper
         sx={{
-          p: 3,
+          p: { xs: 2, sm: 3 },
           bgcolor: 'background.paper',
-          borderRadius: 2,
+          borderRadius: { xs: 1, sm: 2 },
         }}
       >
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -176,7 +191,7 @@ export default function Results({
               </Tooltip>
             )}
             
-            <Tooltip title={copied ? "Copied!" : "Copy to clipboard"}>
+            <Tooltip title={copied ? "Copied to clipboard!" : "Copy to clipboard"}>
               <IconButton onClick={handleCopy} sx={{ mr: 1 }}>
                 {copied ? <CheckIcon /> : <ContentCopyIcon />}
               </IconButton>
@@ -250,7 +265,7 @@ export default function Results({
                 <CircularProgress color="primary" />
               </Box>
             ) : (
-              formattedText || 'No text available'
+              formattedText || 'No extracted text available'
             )}
           </Box>
         )}
@@ -268,7 +283,7 @@ export default function Results({
               }
             }}
           >
-            Format Settings
+            Text Format Settings
           </Button>
               
           <Collapse in={showAdvancedSettings}>
@@ -300,20 +315,20 @@ export default function Results({
               
               <Divider />
               
-              <Typography variant="subtitle2">Page Scan Formatting</Typography>
+              <Typography variant="subtitle2">Page Content Formatting</Typography>
               
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                 <TextField
                   fullWidth
                   size="small"
-                  label="Page Scan Prefix"
+                  label="Page Content Prefix"
                   value={formatSettings.pageScan.prefix}
                   onChange={(e) => handleFormatChange('pageScan.prefix', e.target.value)}
                 />
                 <TextField
                   fullWidth
                   size="small"
-                  label="Page Scan Suffix"
+                  label="Page Content Suffix"
                   value={formatSettings.pageScan.suffix}
                   onChange={(e) => handleFormatChange('pageScan.suffix', e.target.value)}
                 />
@@ -321,20 +336,20 @@ export default function Results({
               
               <Divider />
               
-              <Typography variant="subtitle2">Image Formatting</Typography>
+              <Typography variant="subtitle2">Image Content Formatting</Typography>
               
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                 <TextField
                   fullWidth
                   size="small"
-                  label="Image Prefix"
+                  label="Image Content Prefix"
                   value={formatSettings.image.prefix}
                   onChange={(e) => handleFormatChange('image.prefix', e.target.value)}
                 />
                 <TextField
                   fullWidth
                   size="small"
-                  label="Image Suffix"
+                  label="Image Content Suffix"
                   value={formatSettings.image.suffix}
                   onChange={(e) => handleFormatChange('image.suffix', e.target.value)}
                 />

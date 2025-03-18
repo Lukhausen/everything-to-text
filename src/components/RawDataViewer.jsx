@@ -409,7 +409,7 @@ export default function RawDataViewer({
             Collapse All
           </Button>
           
-          <Tooltip title={copied ? "Copied!" : "Copy to clipboard"}>
+          <Tooltip title={copied ? "Copied to clipboard!" : "Copy to clipboard"}>
             <IconButton 
               size="small" 
               onClick={handleCopy}
@@ -467,7 +467,7 @@ export default function RawDataViewer({
             variant="body2" 
             sx={{ color: 'text.secondary', fontStyle: 'italic' }}
           >
-            No data to display
+            No data available to display
           </Typography>
         )}
       </Paper>
