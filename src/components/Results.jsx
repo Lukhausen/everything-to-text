@@ -25,6 +25,33 @@ import {
 } from '@mui/icons-material'
 import { createTextReplacement, generateFormattedText } from '../utils/textReplacementUtils'
 
+// Text normalization utilities
+const normalizeText = (text, context = 'display') => {
+  if (!text) return '';
+  
+  // Trim leading/trailing whitespace and newlines
+  let normalized = text.replace(/^[\s\n]+|[\s\n]+$/g, '');
+  
+  // We no longer normalize internal newlines to preserve formatting
+  // This allows for multiple consecutive newlines (5+ breaks etc.)
+  
+  return normalized;
+};
+
+// Default format settings
+const DEFAULT_FORMAT_SETTINGS = {
+  includePageHeadings: true,
+  pageHeadingFormat: '\\n\\n\\n\\n//PAGE {pageNumber}: \\n\\n\\n',
+  pageScan: {
+    prefix: '#Full Page Scan of Page {pageNumber}: \\n\\n',
+    suffix: '\\n\\nEnd of Full Page Scan of Page {pageNumber}'
+  },
+  image: {
+    prefix: '\\n\\n\\n##Content of an Image appearing on Page {pageNumber}:\\n\\n',
+    suffix: '\\n\\n\\nEnd of Content of image appearing on Page {pageNumber}'
+  }
+};
+
 export default function Results({ 
   pdfResult, 
   analysisResult,
@@ -42,19 +69,25 @@ export default function Results({
   const [showRawData, setShowRawData] = useState(false)
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false)
 
-  // Format settings
-  const [formatSettings, setFormatSettings] = useState({
-    includePageHeadings: true,
-    pageHeadingFormat: '\\n\\n\\n\\n//PAGE {pageNumber}: \\n\\n\\n',
-    pageScan: {
-      prefix: '#Full Page Scan of Page {pageNumber}: \\n\\n',
-      suffix: '\\n\\nEnd of Full Page Scan of Page {pageNumber}'
-    },
-    image: {
-      prefix: '\\n\\n\\n##Content of an Image appearing on Page {pageNumber}:\\n\\n',
-      suffix: '\\n\\n\\nEnd of Content of image appearing on Page {pageNumber}'
+  // Format settings - load from localStorage if available
+  const [formatSettings, setFormatSettings] = useState(() => {
+    try {
+      const savedSettings = localStorage.getItem('textFormatSettings');
+      return savedSettings ? JSON.parse(savedSettings) : DEFAULT_FORMAT_SETTINGS;
+    } catch (error) {
+      console.error('Error loading format settings from localStorage:', error);
+      return DEFAULT_FORMAT_SETTINGS;
     }
-  })
+  });
+
+  // Save settings to localStorage when they change
+  useEffect(() => {
+    try {
+      localStorage.setItem('textFormatSettings', JSON.stringify(formatSettings));
+    } catch (error) {
+      console.error('Error saving format settings to localStorage:', error);
+    }
+  }, [formatSettings]);
 
   // Initialize the formatted text when results change
   useEffect(() => {
@@ -104,10 +137,18 @@ export default function Results({
     
     setFormatSettings(newSettings)
   }
+  
+  // Reset format settings to defaults
+  const handleResetSettings = () => {
+    setFormatSettings(DEFAULT_FORMAT_SETTINGS);
+  }
 
   // Handle copy to clipboard
   const handleCopy = () => {
-    navigator.clipboard.writeText(formattedText).then(
+    // Use normalized text for copying, same as download
+    const textToCopy = normalizeText(formattedText || analysisResult?.extractedText || '', 'download');
+    
+    navigator.clipboard.writeText(textToCopy).then(
       () => {
         setCopied(true)
         setTimeout(() => setCopied(false), 2000)
@@ -118,14 +159,14 @@ export default function Results({
     )
   }
 
-  // Handle download
+  // Handle download with normalized text
   const handleDownload = () => {
-    const blob = new Blob([formattedText], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
+    if (!analysisResult) return;
     
-    // Get the original filename from the PDF result
+    // Use formatted text with normalization applied
+    const textToDownload = normalizeText(formattedText || analysisResult.extractedText, 'download');
+    
+    // Determine filename
     let fileName = 'extracted-text.txt'
     
     if (pdfResult) {
@@ -145,12 +186,32 @@ export default function Results({
       }
     }
     
-    a.download = fileName
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Create and trigger download
+    const blob = new Blob([textToDownload], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
+
+  // Get the text to display based on whether formatted text is available or not
+  const getDisplayText = () => {
+    if (isLoading) return '';
+    
+    // If we have formatted text from the complex formatting process, use that
+    if (formattedText) {
+      return normalizeText(formattedText, 'display');
+    }
+    
+    // Otherwise use the direct analysis results
+    return !analysisResult || !analysisResult.extractedText 
+      ? 'No extracted text available'
+      : normalizeText(analysisResult.extractedText, 'display');
+  };
 
   // Toggle raw data view
   const toggleRawData = () => {
@@ -205,70 +266,45 @@ export default function Results({
           </Box>
         </Box>
 
-        {showRawData && debugMode ? (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="subtitle2" gutterBottom>Analysis Data</Typography>
-            <Box
-              component="pre"
-              sx={{
-                p: 2,
-                bgcolor: 'background.default',
-                borderRadius: 1,
-                overflowX: 'auto',
-                fontSize: '0.8rem',
-                maxHeight: '400px',
-                '&::-webkit-scrollbar': {
-                  width: '8px',
-                  height: '8px'
-                },
-                '&::-webkit-scrollbar-thumb': {
-                  backgroundColor: 'rgba(255, 152, 0, 0.3)',
-                  borderRadius: '4px'
-                }
-              }}
-            >
-              {JSON.stringify(analysisResult, null, 2)}
+        <Divider sx={{ my: 2 }} />
+        
+        <Box sx={{ mt: 2, position: 'relative' }}>
+          {isLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
+              <CircularProgress />
             </Box>
-          </Box>
-        ) : (
-          <Box
-            sx={{
-              mt: 2,
-              p: 2,
-              minHeight: '300px',
-              maxHeight: '500px',
-              bgcolor: 'background.default',
+          ) : (
+            <Box sx={{ 
+              backgroundColor: 'background.default', 
+              p: 2, 
               borderRadius: 1,
-              overflowY: 'auto',
-              fontFamily: 'monospace',
-              fontSize: '0.9rem',
-              whiteSpace: 'pre-wrap',
+              maxHeight: '500px',
+              overflow: 'auto',
               '&::-webkit-scrollbar': {
                 width: '8px',
                 height: '8px'
               },
               '&::-webkit-scrollbar-thumb': {
-                backgroundColor: 'rgba(255, 152, 0, 0.3)',
-                borderRadius: '4px',
-                '&:hover': {
-                  backgroundColor: 'rgba(255, 152, 0, 0.5)'
-                }
+                backgroundColor: 'grey.500',
+                borderRadius: '4px'
               },
               '&::-webkit-scrollbar-track': {
-                backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                backgroundColor: 'background.paper',
                 borderRadius: '4px'
               }
-            }}
-          >
-            {isLoading ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-                <CircularProgress color="primary" />
-              </Box>
-            ) : (
-              formattedText || 'No extracted text available'
-            )}
-          </Box>
-        )}
+            }}>
+              {showRawData && debugMode ? (
+                <Box component="pre" sx={{ fontSize: '0.8rem', whiteSpace: 'pre-wrap' }}>
+                  {JSON.stringify({pdfResult, analysisResult}, null, 2)}
+                </Box>
+              ) : (
+                <Typography variant="body1" component="div" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+                  {getDisplayText()}
+                </Typography>
+              )}
+            </Box>
+          )}
+        </Box>
         
         {/* Format Settings Button - Now below the output */}
         <Box sx={{ mt: 3 }}>
@@ -288,9 +324,21 @@ export default function Results({
               
           <Collapse in={showAdvancedSettings}>
             <Stack spacing={3} sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" color="text.secondary">
-                Customize how the text output is formatted. All fields support {"{pageNumber}"} for page numbers and \n for line breaks.
-              </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Customize how the text output is formatted. All fields support {"{pageNumber}"} for page numbers and \n for line breaks.
+                </Typography>
+                
+                <Button 
+                  onClick={handleResetSettings}
+                  size="small"
+                  variant="outlined"
+                  color="primary"
+                  sx={{ ml: 2, minWidth: '120px' }}
+                >
+                  Reset Defaults
+                </Button>
+              </Box>
               
               <FormControlLabel
                 control={
