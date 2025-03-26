@@ -24,7 +24,8 @@ export default function ExtractGraphics({
   onComplete, 
   skipProcessing = false, 
   existingResults = null,
-  debugMode = false
+  debugMode = false,
+  scanAllPages = false
 }) {
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false)
@@ -49,6 +50,13 @@ export default function ExtractGraphics({
   // Results
   const [pdfResult, setPdfResult] = useState(null)
 
+  // Add debugging log for scanAllPages prop
+  useEffect(() => {
+    if (debugMode) {
+      console.log(`ExtractGraphics: scanAllPages=${scanAllPages} (${typeof scanAllPages})`);
+    }
+  }, [scanAllPages, debugMode]);
+
   // Handle case when we have existing results
   useEffect(() => {
     if (skipProcessing && existingResults) {
@@ -68,6 +76,15 @@ export default function ExtractGraphics({
       ]);
     }
   }, [skipProcessing, existingResults]);
+
+  // Add a clear log message when component mounts to show the current scanAllPages value
+  useEffect(() => {
+    console.log(`ExtractGraphics mounted with scanAllPages=${scanAllPages} (${typeof scanAllPages})`);
+    
+    // Add localStorage check for debugging
+    const storedValue = localStorage.getItem('scanAllPages');
+    console.log(`localStorage['scanAllPages'] = "${storedValue}" (${typeof storedValue})`);
+  }, []);
 
   // Process the PDF when the component mounts or file changes
   useEffect(() => {
@@ -93,6 +110,16 @@ export default function ExtractGraphics({
       // Track the highest image number seen
       let highestImageNumber = 0;
       
+      // Important: Convert scanAllPages to boolean explicitly
+      const scanAllPagesValue = scanAllPages === true;
+      console.log(`Starting PDF processing with scanAllPages=${scanAllPagesValue} (${typeof scanAllPagesValue})`);
+      
+      // Add explicit log about scanAllPages
+      setLogMessages(prev => [...prev, 
+        `Scan All Pages: ${scanAllPagesValue ? 'ENABLED' : 'DISABLED'}`,
+        `localStorage['scanAllPages']: "${localStorage.getItem('scanAllPages')}"`
+      ]);
+      
       try {
         // Convert file to ArrayBuffer
         const fileReader = new FileReader();
@@ -101,26 +128,19 @@ export default function ExtractGraphics({
           try {
             const pdfData = new Uint8Array(this.result);
             
-            // Set up options for PDF processing
+            // Create options object simply and clearly
             const options = {
-              extractImages: true,  // Enable image extraction
-              detectPageType: true, // Detect if pages are scanned
-              useWorker: true,      // Use web worker if available
+              // Core setting - make this explicit and first 
+              scanAllPages: scanAllPagesValue,
               
-              // Progress callback
-              onProgress: (progressRatio) => {
-                setProgress(progressRatio * 100);
-              },
-              
-              // Log callback for status messages with deduplication
-              onLog: (message) => {
-                // Only add the message if we haven't seen it before
+              // Progress tracking
+              progressCallback: (progressRatio) => setProgress(progressRatio * 100),
+              logCallback: (message) => {
                 if (!seenMessages.current.has(message)) {
                   seenMessages.current.add(message);
+                  setLogMessages(prev => [...prev, message]);
                   
-                  setLogMessages((prev) => [...prev, message]);
-                  
-                  // Extract numbers from typical progress messages
+                  // Parse progress messages
                   if (message.includes('Processing page')) {
                     const match = message.match(/Processing page (\d+)\/(\d+)/);
                     if (match) {
@@ -158,9 +178,12 @@ export default function ExtractGraphics({
                   }
                 }
               },
+              
+              // Debug flags
+              debugMode: true
             };
             
-            // Process the PDF document
+            // Process the PDF with these options
             const result = await processPdfDocument(pdfData, options);
             
             if (result.success) {
@@ -216,7 +239,7 @@ export default function ExtractGraphics({
     };
     
     processPdf();
-  }, [pdfFile, onComplete, processingComplete, skipProcessing, existingResults]);
+  }, [pdfFile, onComplete, processingComplete, skipProcessing, existingResults, scanAllPages]);
 
   return (
     <Stack spacing={3} width="100%">

@@ -25,6 +25,8 @@ import FileUpload from './components/FileUpload'
 import ExtractGraphics from './components/ExtractGraphics'
 import AnalyzeGraphics from './components/AnalyzeGraphics'
 import Results from './components/Results'
+import Settings from './components/Settings'
+import { Route, Routes } from 'react-router-dom'
 
 // Define the steps for our process
 const steps = [
@@ -47,40 +49,31 @@ const steps = [
 ]
 
 function App() {
+  // All state declarations should be at the top
   const [activeStep, setActiveStep] = useState(0)
-  
-  // File state
   const [selectedFile, setSelectedFile] = useState(null)
-  const [fileKey, setFileKey] = useState(null) // Unique identifier for the current file
-  
-  // Processing state and results
+  const [fileKey, setFileKey] = useState(null)
   const [pdfResult, setPdfResult] = useState(null)
   const [analysisResult, setAnalysisResult] = useState(null)
   const [isProcessing, setIsProcessing] = useState(false)
-  
-  // Track the highest step that's being processed
   const [processingStep, setProcessingStep] = useState(0)
-  
-  // Track if user has manually navigated between steps
   const [touched, setTouched] = useState(false)
-  
-  // Debug mode
   const [debugMode, setDebugMode] = useState(false)
-  
-  // Auto progress
   const [autoProgress, setAutoProgress] = useState(
     localStorage.getItem('pdf_processor_auto_progress') === 'true'
   )
-  
-  // Notification state
   const [snackbarOpen, setSnackbarOpen] = useState(false)
   const [snackbarMessage, setSnackbarMessage] = useState('')
-  
-  // API key checking
   const [apiKeySet, setApiKeySet] = useState(false)
-  
-  // Track if we've navigated away from upload step
-  const [hasNavigatedFromUpload, setHasNavigatedFromUpload] = useState(false);
+  const [hasNavigatedFromUpload, setHasNavigatedFromUpload] = useState(false)
+  const [lastStepSelectionTime, setLastStepSelectionTime] = useState(0)
+  // Add scanAllPages state here, at the top with other state
+  const [scanAllPages, setScanAllPages] = useState(() => {
+    // Get the value from localStorage and convert to boolean explicitly
+    const storedValue = localStorage.getItem('scanAllPages');
+    // Only return true if the value is explicitly "true"
+    return storedValue === "true";
+  })
   
   const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)')
 
@@ -212,12 +205,16 @@ function App() {
 
   // Handle PDF processing completion
   const handlePdfProcessingComplete = useCallback((result) => {
-    setPdfResult(result)
-    setIsProcessing(false)
+    // Debug logging to help troubleshoot "Scan All Pages" issues
+    const imageCount = result?.images?.length || 0;
+    const forcedScans = result?.images?.filter(img => img.isForcedScan === true)?.length || 0;
+    console.log(`PDF Processing complete. Images: ${imageCount}, Forced Scans: ${forcedScans}, Scan All Pages: ${scanAllPages} (${typeof scanAllPages})`);
     
-    // Update the processing step
-    const newProcessingStep = 2
-    setProcessingStep(Math.max(processingStep, newProcessingStep))
+    setPdfResult(result);
+    setIsProcessing(false);
+    
+    // Update the processing step to indicate we've completed step 1
+    setProcessingStep(Math.max(processingStep, 2));
     
     // Check if there are any images to analyze
     const hasImages = result && result.images && result.images.length > 0
@@ -244,7 +241,7 @@ function App() {
       // Normal flow - start analysis immediately if auto progress is on
       startAnalysis(result)
     }
-  }, [autoProgress, processingStep, touched, activeStep, startAnalysis]);
+  }, [processingStep, autoProgress, touched, activeStep, startAnalysis, scanAllPages]);
 
   // Function to start the PDF processing
   const startPdfProcessing = useCallback(() => {
@@ -290,9 +287,6 @@ function App() {
     }
   }, [autoProgress, needsProcessing, needsAnalysis, startPdfProcessing, startAnalysis]);
 
-  // Add a timestamp when a step is manually selected
-  const [lastStepSelectionTime, setLastStepSelectionTime] = useState(0);
-  
   // Auto progress to next step when conditions are met
   useEffect(() => {
     // Don't auto-progress if the setting is off
@@ -401,9 +395,10 @@ function App() {
     }
     
     // Special case for moving from Extract to Analyze
-    // If there are no images, skip the Analyze step and go directly to Results
-    if (activeStep === 1 && nextStep === 2 && pdfResult && (!pdfResult.images || pdfResult.images.length === 0)) {
-      // We have PDF result but no images - skip to Results
+    // Only skip analyze step if there are no images AND scanAllPages is disabled
+    if (activeStep === 1 && nextStep === 2 && pdfResult && 
+        (!pdfResult.images || pdfResult.images.length === 0) && !scanAllPages) {
+      // We have PDF result but no images and scanAllPages is not enabled - skip to Results
       if (isStepAccessible(3)) {
         setActiveStep(3); // Jump to Results
         return;
@@ -511,6 +506,7 @@ function App() {
             skipProcessing={!needsProcessing || !!pdfResult}
             existingResults={pdfResult}
             debugMode={debugMode}
+            scanAllPages={scanAllPages}
           />
         ) : (
           <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
@@ -526,6 +522,7 @@ function App() {
             skipAnalysis={!needsAnalysis || !!analysisResult}
             existingResults={analysisResult}
             debugMode={debugMode}
+            scanAllPages={scanAllPages}
           />
         ) : (
           <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
@@ -588,18 +585,18 @@ function App() {
     if (stepIndex <= activeStep) {
       if (stepIndex === 1) return !!selectedFile;
       if (stepIndex === 2) {
-        // Only make Analyze step accessible if we have images to analyze
+        // Make Analyze step accessible if we have images to analyze OR if scanAllPages is enabled
         const hasImages = pdfResult && pdfResult.images && pdfResult.images.length > 0;
-        return !!pdfResult && hasImages;
+        return !!pdfResult && (hasImages || scanAllPages);
       }
       if (stepIndex === 3) return !!analysisResult;
     } else {
       // For future steps, keep the original logic but with image check
       if (stepIndex === 1) return !!selectedFile;
       if (stepIndex === 2) {
-        // Only make Analyze step accessible if we have images to analyze
+        // Make Analyze step accessible if we have images to analyze OR if scanAllPages is enabled
         const hasImages = pdfResult && pdfResult.images && pdfResult.images.length > 0;
-        return !!pdfResult && hasImages;
+        return !!pdfResult && (hasImages || scanAllPages);
       }
       if (stepIndex === 3) return !!analysisResult;
     }
@@ -618,6 +615,10 @@ function App() {
     
     if (stepIndex === 2) {
       if (pdfResult && (!pdfResult.images || pdfResult.images.length === 0)) {
+        if (scanAllPages) {
+          // If scanAllPages is enabled, the problem must be something else
+          return 'Please complete the image extraction process first';
+        }
         return 'No images found in the PDF - this step is skipped';
       }
       return 'Please complete the image extraction process first';
@@ -636,6 +637,36 @@ function App() {
     setSnackbarOpen(false);
   };
 
+  // Add handler for settings changes
+  const handleSettingsChange = (setting, value) => {
+    if (setting === 'scanAllPages') {
+      // First, ensure we have a clean boolean
+      const boolValue = value === true;
+      
+      // Log detailed information about the change
+      console.log(`App.jsx: Updating scanAllPages setting:
+        - From: ${scanAllPages} (${typeof scanAllPages})
+        - To: ${boolValue} (${typeof boolValue})
+        - Original value: ${value} (${typeof value})
+      `);
+      
+      // Update state first
+      setScanAllPages(boolValue);
+      
+      // Then update localStorage with explicit string conversion
+      const valueToStore = String(boolValue);
+      localStorage.setItem('scanAllPages', valueToStore);
+      console.log(`Updated localStorage['scanAllPages'] to "${valueToStore}"`);
+      
+      // If we already have results and changing this setting, show notice
+      if (pdfResult) {
+        setSnackbarMessage("This setting will take effect when you process another PDF.");
+        setSnackbarOpen(true);
+      }
+    }
+    // Handle other settings if needed
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -649,6 +680,7 @@ function App() {
             onComplete={handlePdfProcessingComplete}
             skipProcessing={false}
             debugMode={false}
+            scanAllPages={scanAllPages}
           />
         )}
         
@@ -659,6 +691,7 @@ function App() {
             onComplete={handleAnalysisComplete}
             skipAnalysis={false}
             debugMode={false}
+            scanAllPages={scanAllPages}
           />
         )}
       </Box>
@@ -887,7 +920,76 @@ function App() {
             </Typography>
           </Box>
         </Box>
+
+        {/* Debug info component */}
+        {debugMode && (
+          <Box
+            sx={{
+              position: 'fixed',
+              bottom: 0,
+              right: 0,
+              bgcolor: 'rgba(0,0,0,0.9)',
+              color: 'white',
+              p: 1,
+              borderTopLeftRadius: 8,
+              fontSize: '10px',
+              fontFamily: 'monospace',
+              zIndex: 9999,
+              maxWidth: '400px',
+              maxHeight: '80vh',
+              overflow: 'auto'
+            }}
+          >
+            <Typography variant="caption" sx={{ fontSize: '12px', display: 'block', fontWeight: 'bold', color: 'primary.main' }}>
+              SCAN ALL PAGES DEBUG
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              scanAllPages: {String(scanAllPages)} ({typeof scanAllPages})
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              localStorage: "{localStorage.getItem('scanAllPages')}"
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              Step: {activeStep}/{steps.length-1} | ProcessingStep: {processingStep}
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              isProcessing: {String(isProcessing)}
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              File: {selectedFile ? selectedFile.name : 'none'}
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              Total Images: {pdfResult?.images?.length || 0} 
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block' }}>
+              Forced Scans: {pdfResult?.images?.filter(img => img.isForcedScan === true).length || 0}
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '10px', display: 'block', mt: 1, fontWeight: 'bold' }}>
+              Image IDs:
+            </Typography>
+            {pdfResult?.images?.map((img, index) => (
+              <Typography key={index} variant="caption" sx={{ 
+                fontSize: '9px', 
+                display: 'block',
+                color: img.isForcedScan ? 'primary.main' : 'white'
+              }}>
+                {index+1}. {img.id} {img.isForcedScan ? '(FORCED)' : ''}
+              </Typography>
+            ))}
+          </Box>
+        )}
       </Box>
+
+      {/* Wrap Route in Routes component */}
+      <Routes>
+        <Route path="/settings" element={
+          <Settings 
+            onDebugModeChange={handleDebugModeChange} 
+            onAutoProgressChange={handleAutoProgressChange}
+            onSettingsChange={handleSettingsChange}
+          />
+        } />
+      </Routes>
     </ThemeProvider>
   )
 }

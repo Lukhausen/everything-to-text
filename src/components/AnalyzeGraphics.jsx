@@ -33,7 +33,8 @@ export default function AnalyzeGraphics({
   onComplete, 
   skipAnalysis = false, 
   existingResults = null,
-  debugMode = false
+  debugMode = false,
+  scanAllPages = false
 }) {
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false)
@@ -81,6 +82,37 @@ export default function AnalyzeGraphics({
       localStorage.setItem('pdf_processor_model', 'gpt-4o-mini')
     }
   }, [])
+
+  // Add debugging log for scanAllPages prop
+  useEffect(() => {
+    if (debugMode) {
+      console.log(`AnalyzeGraphics: scanAllPages=${scanAllPages} (${typeof scanAllPages}), Images:`, 
+        pdfResult?.images?.length || 0, 
+        "ForcedScans:", 
+        pdfResult?.images?.filter(img => img.isForcedScan === true).length || 0
+      );
+    }
+  }, [scanAllPages, debugMode, pdfResult]);
+
+  // Add more robust debugging for scanAllPages
+  useEffect(() => {
+    // Log scanAllPages value and any forced scans when component mounts or updates
+    if (pdfResult && pdfResult.images) {
+      const forcedScans = pdfResult.images.filter(img => img.isForcedScan === true);
+      
+      console.log(`AnalyzeGraphics:
+        - scanAllPages: ${scanAllPages} (${typeof scanAllPages})
+        - Total images: ${pdfResult.images.length}
+        - Forced scans: ${forcedScans.length}
+        - Forced scan IDs: ${forcedScans.map(img => img.id).join(', ')}
+      `);
+      
+      // Add to log messages
+      if (forcedScans.length > 0) {
+        addLogMessage(`Found ${forcedScans.length} page scans from "Scan All Pages" feature to analyze`);
+      }
+    }
+  }, [pdfResult, scanAllPages]);
 
   // Handle case when we have existing results
   useEffect(() => {
@@ -146,38 +178,72 @@ export default function AnalyzeGraphics({
     }
     
     const analyzeImages = async () => {
-      // Set processing flag to prevent duplicate calls
-      processingRef.current = true;
-      
-      setIsProcessing(true);
-      setError(null);
-      setLogMessages([]);
-      setProgress(0);
-      setProcessedImages(0);
-      setSuccessfulImages(0);
-      setFailedImages(0);
-      setRefusalCount(0);
-      
-      // Reset seen messages
-      seenMessages.current = new Set();
-      
       try {
-        // Initialize total images count
-        const totalImageCount = pdfResult.images.length;
+        // Set processing flag
+        processingRef.current = true;
+        
+        // Reset state
+        setIsProcessing(true);
+        setError(null);
+        setLogMessages([]);
+        setProgress(0);
+        setProcessedImages(0);
+        setSuccessfulImages(0);
+        setFailedImages(0);
+        setRefusalCount(0);
+        
+        // Reset seen messages
+        seenMessages.current.clear();
+        
+        // Check if we have images to analyze
+        if (!pdfResult || !pdfResult.images || pdfResult.images.length === 0) {
+          addLogMessage('No images to analyze');
+          setError('No images found in the PDF to analyze');
+          setIsProcessing(false);
+          processingRef.current = false;
+          return;
+        }
+        
+        // Get images to analyze
+        const imagesToAnalyze = pdfResult.images;
+        const totalImageCount = imagesToAnalyze.length;
         setTotalImages(totalImageCount);
         
-        // Log start of processing
+        // Log start of analysis
         addLogMessage(`Starting analysis of ${totalImageCount} images...`);
         addLogMessage(`Using model: ${model}`);
-        addLogMessage(`Max concurrent requests: ${maxConcurrentRequests}`);
         
-        // Set up options for batch processing
-        const options = {
+        // Check for forced scans
+        const forcedScans = imagesToAnalyze.filter(img => img.isForcedScan === true);
+        if (forcedScans.length > 0) {
+          addLogMessage(`Processing ${forcedScans.length} forced scans from "Scan All Pages" feature`);
+        }
+        
+        // Prepare each image for analysis, adding custom properties as needed
+        for (const image of imagesToAnalyze) {
+          // Special handling for forced scans
+          if (image.isForcedScan === true) {
+            // Add property to use special prompt
+            image.isPageDescription = true;
+          }
+        }
+        
+        // Set up batch processing options
+        const batchOptions = {
           maxConcurrentRequests,
           model,
           temperature: 0.7,
           maxTokens: 1000,
-          maxRefusalRetries: 2
+          maxRefusalRetries: 2,
+          
+          // Define custom instructions for different image types
+          getCustomInstructions: (image) => {
+            if (image.isPageDescription || image.isForcedScan) {
+              return "This is a complete page from a PDF document. Describe the overall layout and content of this page, including text organization, any tables, forms, or visual elements you can see.";
+            }
+            // Default to null for regular images (use default prompt)
+            return null;
+          }
         };
         
         // Set up callbacks for batch processing
@@ -235,7 +301,7 @@ export default function AnalyzeGraphics({
         };
         
         // Start batch processing
-        await processBatchImages(pdfResult, apiKey, options, callbacks);
+        await processBatchImages(pdfResult, apiKey, batchOptions, callbacks);
       } catch (err) {
         console.error('Error processing images:', err);
         setError(err.message || 'An error occurred while analyzing images');

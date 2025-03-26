@@ -18,6 +18,9 @@ import {
   Typography,
   CircularProgress,
   Alert,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from '@mui/material'
 import {
   ExpandMore as ExpandMoreIcon,
@@ -59,7 +62,7 @@ const maskApiKey = (key) => {
   return key.slice(0, 4) + '•'.repeat(key.length - 8) + key.slice(-4)
 }
 
-export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
+export default function Settings({ onDebugModeChange, onAutoProgressChange, onSettingsChange }) {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(STORAGE_KEYS.API_KEY) || '')
   const [showApiKey, setShowApiKey] = useState(false)
   const [model, setModel] = useState(() => localStorage.getItem(STORAGE_KEYS.MODEL) || 'gpt-4o-mini')
@@ -75,6 +78,9 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
   const [autoProgress, setAutoProgress] = useState(() => 
     safeParseBoolean(localStorage.getItem(STORAGE_KEYS.AUTO_PROGRESS), true)
   )
+  const [scanAllPages, setScanAllPages] = useState(() => {
+    return localStorage.getItem('scanAllPages') === "true";
+  });
   
   // API key validation states
   const [validationStatus, setValidationStatus] = useState('idle') // 'idle', 'validating', 'valid', 'invalid'
@@ -204,9 +210,38 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
     originalApiKeyRef.current = apiKey
   }, [apiKey])
 
+  // Track initial mount for debugging
+  useEffect(() => {
+    console.log(`Settings component mounted with scanAllPages=${scanAllPages} (${typeof scanAllPages})`);
+    console.log(`localStorage['scanAllPages'] = "${localStorage.getItem('scanAllPages')}"`);
+  }, []);
+
+  // Improved toggle handler for scan all pages
+  const handleScanAllPagesToggle = (event) => {
+    // Get boolean value directly from checkbox
+    const newValue = !!event.target.checked;
+    
+    console.log(`Settings: Toggle scanAllPages from ${scanAllPages} to ${newValue}`);
+    
+    // Update local state
+    setScanAllPages(newValue);
+    
+    // Update localStorage with explicit string
+    const valueToStore = String(newValue);
+    localStorage.setItem('scanAllPages', valueToStore);
+    console.log(`Updated localStorage['scanAllPages'] to "${valueToStore}"`);
+    
+    // Notify parent component
+    if (typeof onSettingsChange === 'function') {
+      console.log(`Calling onSettingsChange with 'scanAllPages', ${newValue}`);
+      onSettingsChange('scanAllPages', newValue);
+    } else {
+      console.warn('onSettingsChange is not a function', onSettingsChange);
+    }
+  };
+
   return (
     <Stack spacing={3} width="100%">
-      <Typography>API Key</Typography>
       <TextField
         fullWidth
         label="OpenAI API Key"
@@ -216,14 +251,14 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
         variant="outlined"
         error={validationStatus === 'invalid'}
         helperText={
-          validationStatus === 'invalid' 
-            ? validationError 
-            : "Your OpenAI API key is stored locally in your browser only and never sent to any external server"
+          !validationStatus || validationStatus === 'idle' || validationStatus === 'validating'
+            ? "Your API key is stored locally and never sent to any server"
+            : null // We'll use Alert component instead for error/success messages
         }
         FormHelperTextProps={{
           sx: {
-            color: validationStatus === 'invalid' ? 'error.main' : 'text.secondary',
-            fontStyle: validationStatus === 'invalid' ? 'normal' : 'italic',
+            color: 'text.secondary',
+            fontStyle: 'italic',
             mt: 1
           }
         }}
@@ -254,13 +289,57 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
       />
       
       {validationStatus === 'invalid' && (
-        <Alert severity="error" sx={{ mt: 1 }}>
-          The API key you entered appears to be invalid. Please check your key and try again.
+        <Alert 
+          severity="error" 
+          variant="outlined"
+          sx={{ 
+            mt: 1,
+            '& .MuiAlert-message': {
+              width: '100%'
+            }
+          }}
+        >
+          <Stack spacing={1} width="100%">
+            <Typography variant="body2" fontWeight="medium">
+              Invalid API key. Please check your key and try again.
+            </Typography>
+            
+            {validationError && (
+              <Typography variant="caption" sx={{ wordBreak: 'break-word' }}>
+                Error details: {validationError}
+              </Typography>
+            )}
+            
+            <Button 
+              component="a" 
+              href="https://platform.openai.com/account/api-keys" 
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="text" 
+              size="small"
+              startIcon={<CheckCircleIcon fontSize="small" />}
+              sx={{ 
+                alignSelf: 'flex-start',
+                mt: 0.5,
+                color: 'primary.main',
+                '&:hover': {
+                  backgroundColor: 'rgba(255, 152, 0, 0.1)'
+                }
+              }}
+            >
+              Get an OpenAI API key
+            </Button>
+          </Stack>
         </Alert>
       )}
       
       {validationStatus === 'valid' && (
-        <Alert severity="success" sx={{ mt: 1 }}>
+        <Alert 
+          severity="success"
+          variant="outlined" 
+          sx={{ mt: 1 }}
+          icon={<CheckCircleIcon fontSize="inherit" />}
+        >
           API key validated successfully!
         </Alert>
       )}
@@ -271,21 +350,22 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
         sx={{ 
           alignSelf: 'flex-start',
           color: 'text.primary',
+          fontWeight: 'medium',
           '&:hover': {
             color: 'primary.main'
           }
         }}
       >
-        Advanced Settings
+        Advanced Options
       </Button>
 
       <Collapse in={showAdvanced}>
         <Stack spacing={3} sx={{ mt: 1 }}>
           <FormControl fullWidth>
-            <InputLabel>Model</InputLabel>
+            <InputLabel>AI Model</InputLabel>
             <Select
               value={model}
-              label="Model"
+              label="AI Model"
               onChange={(e) => setModel(e.target.value)}
               sx={{
                 '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
@@ -294,16 +374,16 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
               }}
             >
               <MenuItem value="gpt-4o-mini">GPT-4o Mini (Faster, Less Costly)</MenuItem>
-              <MenuItem value="gpt-4o">GPT-4o (More Accurate, Higher Quality)</MenuItem>
+              <MenuItem value="gpt-4o">GPT-4o (Higher Quality Analysis)</MenuItem>
             </Select>
             <FormHelperText>
-              GPT-4o Mini is recommended for most documents. Use GPT-4o for more detailed analysis of complex images.
+              Mini is recommended for most documents. Use full GPT-4o for complex images.
             </FormHelperText>
           </FormControl>
 
           <Box>
-            <Typography gutterBottom>
-              Maximum Concurrent Requests: {maxConcurrentRequests}
+            <Typography gutterBottom variant="body2" sx={{ fontWeight: 'medium' }}>
+              Processing Speed: {maxConcurrentRequests} concurrent requests
             </Typography>
             <Slider
               value={maxConcurrentRequests}
@@ -345,9 +425,9 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
               }
               label={
                 <Box>
-                  <Typography variant="body2">Automatic Progress</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>Auto-Progress Through Steps</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Automatically advance to next step when current step is complete
+                    Automatically move to next step when current step completes
                   </Typography>
                 </Box>
               }
@@ -365,14 +445,26 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange }) {
               }
               label={
                 <Box>
-                  <Typography variant="body2">Debug Mode</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>Developer Mode</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Display processing logs and access raw data viewer
+                    Show technical logs and access raw data viewer
                   </Typography>
                 </Box>
               }
             />
           </FormControl>
+          
+          {/* Scan All Pages toggle */}
+          <FormControlLabel
+            control={
+              <Switch
+                checked={scanAllPages}
+                onChange={handleScanAllPagesToggle}
+                color="primary"
+              />
+            }
+            label="Scan All Pages (generates descriptions for pages without images)"
+          />
         </Stack>
       </Collapse>
     </Stack>

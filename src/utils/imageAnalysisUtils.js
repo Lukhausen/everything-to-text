@@ -11,6 +11,18 @@ import { withRetry } from './retryUtils';
  * @returns {Promise<Object>} Analysis results including the response
  */
 export async function analyzeImage(base64Image, apiKey, options = {}) {
+  // Destructure options with defaults
+  const {
+    model = 'latest',
+    temperature = 0.7,
+    maxTokens = 1000,
+    retryCount = 2,
+    analysisType = 'general',
+    instructions = null, // Custom instructions support
+    isForcedScan = false, // Add option to indicate this is a forced page scan
+    // ... other existing options
+  } = options;
+
   // Validate required parameters
   if (!apiKey) {
     throw new Error('OpenAI API key is required');
@@ -35,44 +47,74 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
   let refusalRetryCount = 0;
   const maxRefusalRetries = options.maxRefusalRetries || 3;
 
-  // The preset prompt that will be used for all image analysis
-  const PRESET_PROMPT = "Describe everything in great detail. Transcribe all visible text word for word.";
-
   // Function to perform basic image analysis without refusal checking
   const performBasicAnalysis = async () => {
-    // Make API request to OpenAI with preset prompt
-    const response = await openai.chat.completions.create({
-      model: options.model || "gpt-4o-mini",
-      messages: [
-        { 
-          role: "user", 
-          content: [
-            { type: "text", text: PRESET_PROMPT },
-            { 
-              type: "image_url", 
-              image_url: {
-                url: dataURI
-              }
-            }
-          ]
+    try {
+      // Prepare prompt based on analysis type or custom instructions
+      let prompt = "Describe what you see in this image in detail."; // Default prompt
+      
+      if (instructions) {
+        // Use custom instructions if provided
+        prompt = instructions;
+      } else if (isForcedScan) {
+        // Special prompt for forced page scans
+        prompt = "This is a full page scan from a PDF. Describe the layout, content, and structure of this page, including any text areas, tables, forms, or visual elements.";
+      } else {
+        // Otherwise, use default prompts based on analysis type
+        switch (analysisType) {
+          case 'general':
+            prompt = "Describe what you see in this image in detail.";
+            break;
+          case 'page_description':
+            prompt = "This is a scan of a PDF page. Describe the layout, content, and any visible elements on this page.";
+            break;
+          // ... add other analysis types as needed
+          default:
+            prompt = "Describe what you see in this image in detail.";
         }
-      ],
-      max_tokens: options.maxTokens || 1000,
-      temperature: options.temperature || 0.7
-    });
+      }
+      
+      // Make API request to OpenAI with preset prompt
+      const response = await openai.chat.completions.create({
+        model: model,
+        messages: [
+          { 
+            role: "user", 
+            content: [
+              { type: "text", text: prompt },
+              { 
+                type: "image_url", 
+                image_url: {
+                  url: dataURI
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: maxTokens,
+        temperature: temperature
+      });
 
-    const responseText = response.choices[0]?.message?.content || '';
-    
-    return {
-      success: true,
-      text: responseText,
-      response: response
-    };
+      const responseText = response.choices[0]?.message?.content || '';
+      
+      return {
+        success: true,
+        text: responseText,
+        response: response
+      };
+    } catch (error) {
+      console.error(`Error during basic analysis: ${error.message}`);
+      return {
+        success: false,
+        text: '',
+        response: null
+      };
+    }
   };
 
   // Use withRetry for API call retries
   const result = await withRetry(performBasicAnalysis, {
-    maxRetries: options.maxRetries || 3,
+    maxRetries: retryCount,
     onError: (message) => console.warn(message),
     retryOnResult: async (result) => {
       // If the API call was successful, check for refusal

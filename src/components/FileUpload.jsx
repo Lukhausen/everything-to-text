@@ -141,10 +141,16 @@ const FileUpload = ({ onFileSelect, onDebugModeChange, onAutoProgressChange, has
         <Box sx={{ mt: 2 }}>
           <Button
             onClick={handleAdvancedToggle}
-            endIcon={showAdvanced ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-            sx={{ color: 'text.secondary' }}
+            startIcon={showAdvanced ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+            sx={{ 
+              color: 'text.primary',
+              fontWeight: 'medium',
+              '&:hover': {
+                color: 'primary.main'
+              }
+            }}
           >
-            Advanced Settings
+            Settings
           </Button>
           <Collapse in={showAdvanced}>
             <Box sx={{ mt: 1 }}>

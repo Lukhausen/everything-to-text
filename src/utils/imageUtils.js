@@ -113,66 +113,114 @@ export async function compareImages(dataURL1, dataURL2) {
  * @returns {Promise<Array>} Array of unique images with combined IDs
  */
 export async function groupSimilarImages(images, threshold = 0.99) {
+  // Skip processing if no images or only one image
   if (!images || images.length <= 1) {
     return images;
   }
   
-  const uniqueImages = [];
-  const processedIndices = new Set();
-  
-  for (let i = 0; i < images.length; i++) {
-    if (processedIndices.has(i)) continue;
+  try {
+    // First, separate forced scans from regular images with explicit type checks
+    // We NEVER want to group forced scans with other images or with each other
+    const forcedScans = images.filter(img => {
+      // Check all possible indicators that this is a forced scan
+      return img.isForcedScan === true || 
+             img.scanReason === 'forced_by_toggle' ||
+             (img.isFullPage === true && img.hasValidContent === true);
+    });
     
-    const currentImage = images[i];
-    const combinedIds = [currentImage.id];
-    let representativeImage = { ...currentImage };
+    // All regular images are those that are NOT forced scans
+    const regularImages = images.filter(img => {
+      // Exclude any image that might be a forced scan
+      return img.isForcedScan !== true && 
+             img.scanReason !== 'forced_by_toggle' &&
+             !(img.isFullPage === true && img.hasValidContent === true);
+    });
     
-    // Compare with remaining images
-    for (let j = i + 1; j < images.length; j++) {
-      if (processedIndices.has(j)) continue;
+    // Log the breakdown for debugging with detailed information
+    console.log(`Image grouping breakdown:
+      - Total images: ${images.length}
+      - Forced scans: ${forcedScans.length}
+      - Regular images: ${regularImages.length}
+      - Forced scan IDs: ${forcedScans.map(img => img.id).join(', ')}
+    `);
+    
+    // Only perform similarity grouping on regular images
+    const uniqueGroups = [];
+    const processedIds = new Set();
+    
+    // Group similar regular images
+    for (let i = 0; i < regularImages.length; i++) {
+      const img1 = regularImages[i];
       
-      const otherImage = images[j];
+      // Skip if already processed
+      if (processedIds.has(img1.id)) continue;
       
-      try {
+      const group = [img1];
+      processedIds.add(img1.id);
+      
+      for (let j = i + 1; j < regularImages.length; j++) {
+        const img2 = regularImages[j];
+        
+        // Skip if already processed
+        if (processedIds.has(img2.id)) continue;
+        
         // Skip comparison if images are from different pages
-        if (currentImage.pageNumber !== otherImage.pageNumber) {
+        if (img1.pageNumber !== img2.pageNumber) {
           continue;
         }
         
-        // Skip if sizes are too different
-        const sizeRatio = Math.max(
-          currentImage.width / otherImage.width,
-          otherImage.width / currentImage.width
-        );
-        if (sizeRatio > 1.1) { // More than 10% size difference
-          continue;
+        try {
+          // Compare images
+          const similarity = await compareImages(img1.dataURL, img2.dataURL);
+          
+          if (similarity >= threshold) {
+            group.push(img2);
+            processedIds.add(img2.id);
+          }
+        } catch (e) {
+          console.warn(`Error comparing images ${img1.id} and ${img2.id}: ${e.message}`);
+          // Continue with other comparisons
         }
+      }
+      
+      uniqueGroups.push(group);
+    }
+    
+    // Create final results for regular images
+    const regularResult = [];
+    
+    for (const group of uniqueGroups) {
+      if (group.length === 1) {
+        // Single image, just add it
+        regularResult.push(group[0]);
+      } else {
+        // Multiple similar images, create combined entry
+        const baseImage = group[0];
+        const combinedId = group.map(img => img.id).join('_AND_');
         
-        // Calculate similarity
-        const similarity = await compareImages(
-          currentImage.dataURL,
-          otherImage.dataURL
-        );
-        
-        // If similar enough, consider them duplicates
-        if (similarity >= threshold) {
-          combinedIds.push(otherImage.id);
-          processedIndices.add(j);
-        }
-      } catch (error) {
-        console.warn(`Error comparing images ${currentImage.id} and ${otherImage.id}:`, error);
+        regularResult.push({
+          ...baseImage,
+          id: combinedId,
+          originalId: baseImage.id,
+          similarCount: group.length,
+          components: group.map(img => ({
+            id: img.id,
+            pageNumber: img.pageNumber
+          }))
+        });
       }
     }
     
-    // Add combined ID information to the representative image
-    representativeImage.originalId = representativeImage.id;
-    representativeImage.id = combinedIds.join('_AND_');
-    representativeImage.combinedImages = combinedIds.length;
+    // Combine results: first all forced scans, then regular images
+    // This ensures forced scans have priority in the UI display
+    const result = [...forcedScans, ...regularResult];
     
-    // Add to unique images list
-    uniqueImages.push(representativeImage);
-    processedIndices.add(i);
+    console.log(`Image grouping complete: ${regularImages.length} regular images grouped into ${uniqueGroups.length} groups, ${forcedScans.length} forced scans kept separate. Total: ${result.length} images.`);
+    
+    return result;
+  } catch (error) {
+    console.error('Error grouping similar images:', error);
+    // Fallback to original images
+    return images;
   }
-  
-  return uniqueImages;
 } 
