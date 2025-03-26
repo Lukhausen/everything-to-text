@@ -2,30 +2,40 @@
  * Utilities for replacing placeholders with batch analysis results
  */
 
+// Helper function to escape special regex characters
+const escapeRegExp = (string) => {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
 // Default replacement format settings
 const DEFAULT_CONFIG = {
   // Page indicators and formatting
   pageIndicators: {
-    includePageHeadings: true,
+  includePageHeadings: true,
     pageHeadingFormat: '//PAGE {pageNumber}:',
   },
   
   // Content types with markers
   contentTypes: {
-    // Full page scan replacement format
-    pageScan: {
-      prefix: '#FULL_PAGE_SCAN_START#',
-      suffix: '#FULL_PAGE_SCAN_END#'
+    // Page heading markers (new)
+    pageHeading: {
+      prefix: '#PAGE_{pageNumber}_START#',
+      suffix: '#PAGE_{pageNumber}_END#'
     },
-    // Regular image replacement format
-    image: {
-      prefix: '#IMAGE_CONTENT_START#',
-      suffix: '#IMAGE_CONTENT_END#'
+  // Full page scan replacement format
+  pageScan: {
+      prefix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_START#',
+      suffix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_END#'
+  },
+  // Regular image replacement format
+  image: {
+      prefix: '#IMAGE_CONTENT_PAGE_{pageNumber}_START#',
+      suffix: '#IMAGE_CONTENT_PAGE_{pageNumber}_END#'
     },
     // Text content format
     text: {
-      prefix: '#TEXT_CONTENT_START#',
-      suffix: '#TEXT_CONTENT_END#'
+      prefix: '#TEXT_CONTENT_PAGE_{pageNumber}_START#',
+      suffix: '#TEXT_CONTENT_PAGE_{pageNumber}_END#'
     }
   },
   
@@ -75,6 +85,7 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
   const config = { 
     pageIndicators: { ...DEFAULT_CONFIG.pageIndicators },
     contentTypes: {
+      pageHeading: { ...DEFAULT_CONFIG.contentTypes.pageHeading },
       pageScan: { ...DEFAULT_CONFIG.contentTypes.pageScan },
       image: { ...DEFAULT_CONFIG.contentTypes.image },
       text: { ...DEFAULT_CONFIG.contentTypes.text }
@@ -156,7 +167,7 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
           hasPageScan = true;
         }
         
-        // Replace {pageNumber} in prefix and suffix
+        // Replace {pageNumber} in prefix and suffix to include proper page number
         const pageNumberRegex = /\{pageNumber\}/g;
         const prefix = format.prefix.replace(pageNumberRegex, page.pageNumber);
         const suffix = format.suffix.replace(pageNumberRegex, page.pageNumber);
@@ -183,26 +194,60 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
       // Process the content to find text that's not part of image/scan placeholders
       let textOnlyContent = content;
       
-      // Remove all placeholder patterns
-      imageRefs.forEach(ref => {
-        if (ref.placeholder) {
-          textOnlyContent = textOnlyContent.replace(ref.placeholder, '');
-        }
-      });
+      // Check if the content already contains text content markers for this page
+      const textPrefix = config.contentTypes.text.prefix.replace(/\{pageNumber\}/g, page.pageNumber);
+      const textSuffix = config.contentTypes.text.suffix.replace(/\{pageNumber\}/g, page.pageNumber);
+      const hasTextMarkers = content.includes(textPrefix) || content.includes(textSuffix);
       
-      // If there's any text content left after removing placeholders, add it as a content block
-      textOnlyContent = textOnlyContent.trim();
-      if (textOnlyContent.length > 0) {
-        const markerToContentSpacing = createSpacing(config.spacing.markerToContent);
-        const textFormat = config.contentTypes.text;
-        const formattedText = `${textFormat.prefix}${markerToContentSpacing}${textOnlyContent}${markerToContentSpacing}${textFormat.suffix}`;
-        
-        contentBlocks.push({
-          type: 'text',
-          text: formattedText,
-          placeholder: null // No placeholder for general text content
+      // Only proceed if there are no text markers already
+      if (!hasTextMarkers) {
+        // Remove all placeholder patterns
+        imageRefs.forEach(ref => {
+          if (ref.placeholder) {
+            // Use a global regex to ensure all instances are replaced
+            const placeholderRegex = new RegExp(escapeRegExp(ref.placeholder), 'g');
+            textOnlyContent = textOnlyContent.replace(placeholderRegex, '');
+          }
         });
+        
+        // If there's any text content left after removing placeholders, add it as a content block
+        textOnlyContent = textOnlyContent.trim();
+        if (textOnlyContent.length > 0) {
+          const markerToContentSpacing = createSpacing(config.spacing.markerToContent);
+          
+          // Get text format with page number
+          const textFormat = {
+            prefix: textPrefix,
+            suffix: textSuffix
+          };
+          
+          const formattedText = `${textFormat.prefix}${markerToContentSpacing}${textOnlyContent}${markerToContentSpacing}${textFormat.suffix}`;
+          
+          contentBlocks.push({
+            type: 'text',
+            text: formattedText,
+            placeholder: null // No placeholder for general text content
+          });
+        }
       }
+    } else if (content.trim().length === 0 && imageRefs.length === 0) {
+      // Handle case of empty page - mark it with text content tags anyway
+      const markerToContentSpacing = createSpacing(config.spacing.markerToContent);
+      
+      // Get text format with page number
+      const textFormat = {
+        prefix: config.contentTypes.text.prefix.replace(/\{pageNumber\}/g, page.pageNumber),
+        suffix: config.contentTypes.text.suffix.replace(/\{pageNumber\}/g, page.pageNumber)
+      };
+      
+      // Even for empty pages, provide clear text markers
+      const formattedText = `${textFormat.prefix}${markerToContentSpacing}[Empty page]${markerToContentSpacing}${textFormat.suffix}`;
+      
+      contentBlocks.push({
+        type: 'text',
+        text: formattedText,
+        placeholder: null
+      });
     }
     
     // Third pass: Replace content with properly arranged blocks
@@ -212,18 +257,33 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
         // If there's a page scan, we'll start fresh
         content = '';
       } else {
-        // For non-page-scan pages, we need to preserve the structure but replace placeholders
-        // First handle the placeholder replacements
-        contentBlocks.forEach(block => {
-          if (block.placeholder) {
-            content = content.replace(block.placeholder, block.text);
-          }
-        });
+        // For non-page-scan pages, we need to check if it's text-only content
+        const hasImageBlocks = contentBlocks.some(block => block.type === 'image' && block.placeholder);
+        const hasTextBlock = contentBlocks.some(block => block.type === 'text' && !block.placeholder);
         
-        // Then add text content (which doesn't have a placeholder) at the end if it exists
-        const textBlock = contentBlocks.find(block => block.type === 'text' && !block.placeholder);
-        if (textBlock) {
-          content = content.trim() + (content.length > 0 ? createSpacing(config.spacing.betweenContentSections) : '') + textBlock.text;
+        // If there are only text blocks (no image blocks with placeholders), clear content
+        if (!hasImageBlocks && hasTextBlock) {
+          // This is a text-only page, so we should start fresh
+          content = '';
+          
+          // Add the text content block directly
+          const textBlock = contentBlocks.find(block => block.type === 'text');
+          if (textBlock) {
+            content = textBlock.text;
+          }
+        } else {
+          // For pages with image placeholders, replace them first
+          contentBlocks.forEach(block => {
+            if (block.placeholder) {
+              content = content.replace(block.placeholder, block.text);
+            }
+          });
+          
+          // Then add text content (which doesn't have a placeholder) at the end if it exists
+          const textBlock = contentBlocks.find(block => block.type === 'text' && !block.placeholder);
+          if (textBlock) {
+            content = content.trim() + (content.length > 0 ? createSpacing(config.spacing.betweenContentSections) : '') + textBlock.text;
+          }
         }
       }
       
@@ -257,6 +317,25 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
           content += textBlock.text;
         }
       }
+    } else {
+      // If no content blocks were created, create a default text block
+      const markerToContentSpacing = createSpacing(config.spacing.markerToContent);
+      
+      // Get text format with page number
+      const textFormat = {
+        prefix: config.contentTypes.text.prefix.replace(/\{pageNumber\}/g, page.pageNumber),
+        suffix: config.contentTypes.text.suffix.replace(/\{pageNumber\}/g, page.pageNumber)
+      };
+      
+      // Default text for empty page
+      let textContent = '[Empty page]';
+      if (rawText) {
+        textContent = rawText;
+      } else if (content.trim()) {
+        textContent = content.trim();
+      }
+      
+      content = `${textFormat.prefix}${markerToContentSpacing}${textContent}${markerToContentSpacing}${textFormat.suffix}`;
     }
     
     // Return the page with replaced content
@@ -288,6 +367,7 @@ export function generateFormattedText(replacementResult, customConfig = {}) {
   const config = { 
     pageIndicators: { ...DEFAULT_CONFIG.pageIndicators },
     contentTypes: {
+      pageHeading: { ...DEFAULT_CONFIG.contentTypes.pageHeading },
       pageScan: { ...DEFAULT_CONFIG.contentTypes.pageScan },
       image: { ...DEFAULT_CONFIG.contentTypes.image },
       text: { ...DEFAULT_CONFIG.contentTypes.text }
@@ -301,6 +381,9 @@ export function generateFormattedText(replacementResult, customConfig = {}) {
   }
   
   if (customConfig.contentTypes) {
+    if (customConfig.contentTypes.pageHeading) {
+      Object.assign(config.contentTypes.pageHeading, customConfig.contentTypes.pageHeading);
+    }
     if (customConfig.contentTypes.pageScan) {
       Object.assign(config.contentTypes.pageScan, customConfig.contentTypes.pageScan);
     }
@@ -316,27 +399,52 @@ export function generateFormattedText(replacementResult, customConfig = {}) {
     Object.assign(config.spacing, customConfig.spacing);
   }
   
+  // Build the text with appropriate spacing
+  return replacementResult.pages.map((page, index, pages) => {
   // Define regex for replacing all occurrences of {pageNumber}
   const pageNumberRegex = /\{pageNumber\}/g;
   
-  // Build the text with appropriate spacing
-  return replacementResult.pages.map((page, index, pages) => {
-    // Generate page heading if enabled
-    let result = '';
+    // Get heading markers with page number for wrapping the entire page content
+    const headingPrefix = config.contentTypes.pageHeading.prefix.replace(pageNumberRegex, page.pageNumber);
+    const headingSuffix = config.contentTypes.pageHeading.suffix.replace(pageNumberRegex, page.pageNumber);
     
-    if (config.pageIndicators.includePageHeadings) {
-      // Add spacing before page heading
-      result += createSpacing(config.spacing.betweenContentSections);
+    // Build the page content including any inner headings if needed
+    let pageContent = '';
+    
+    // Only add the page heading if enabled AND page markers aren't being used
+    const usePageMarkers = headingPrefix && 
+                          headingPrefix.trim() !== '' && 
+                          headingPrefix !== '#PAGE_{pageNumber}_START#';
+    const includeInnerHeading = config.pageIndicators.includePageHeadings && !usePageMarkers;
+    
+    if (includeInnerHeading) {
+      // Add spacing before the inner heading
+      pageContent += createSpacing(config.spacing.betweenContentSections);
       
-      // Add the heading
-      result += config.pageIndicators.pageHeadingFormat.replace(pageNumberRegex, page.pageNumber);
+      // Add the heading with page number
+      pageContent += config.pageIndicators.pageHeadingFormat.replace(pageNumberRegex, page.pageNumber);
       
       // Add spacing after heading
-      result += createSpacing(config.spacing.betweenContentSections);
+      pageContent += createSpacing(config.spacing.betweenContentSections);
     }
     
-    // Add the page content
-    result += page.content;
+    // Add the main page content
+    pageContent += page.content;
+    
+    // Final result with proper wrapping of the entire page
+    let result = '';
+    
+    // Only wrap with page markers if we have valid markers
+    if (headingPrefix && headingPrefix.trim() !== '') {
+      // Add marker-to-content spacing
+      const markerToContentSpacing = createSpacing(config.spacing.markerToContent);
+      
+      // Wrap everything with page markers
+      result = `${headingPrefix}${markerToContentSpacing}${pageContent}${markerToContentSpacing}${headingSuffix}`;
+    } else {
+      // No page markers, just use the content directly
+      result = pageContent;
+    }
     
     // Add spacing between pages (except for the last page)
     if (index < pages.length - 1) {

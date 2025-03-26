@@ -56,17 +56,21 @@ const DEFAULT_FORMAT_SETTINGS = {
     pageHeadingFormat: '//PAGE {pageNumber}:',
   },
   contentTypes: {
+    pageHeading: {
+      prefix: '#PAGE_{pageNumber}_START#',
+      suffix: '#PAGE_{pageNumber}_END#'
+    },
     pageScan: {
-      prefix: '#FULL_PAGE_SCAN_START#',
-      suffix: '#FULL_PAGE_SCAN_END#'
+      prefix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_START#',
+      suffix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_END#'
     },
     image: {
-      prefix: '#IMAGE_CONTENT_START#',
-      suffix: '#IMAGE_CONTENT_END#'
+      prefix: '#IMAGE_CONTENT_PAGE_{pageNumber}_START#',
+      suffix: '#IMAGE_CONTENT_PAGE_{pageNumber}_END#'
     },
     text: {
-      prefix: '#TEXT_CONTENT_START#',
-      suffix: '#TEXT_CONTENT_END#'
+      prefix: '#TEXT_CONTENT_PAGE_{pageNumber}_START#',
+      suffix: '#TEXT_CONTENT_PAGE_{pageNumber}_END#'
     }
   },
   spacing: {
@@ -287,12 +291,14 @@ export default function Results({
       return 'No extracted text available';
     }
     
+    // Enable this flag to see all marker debugging info
+    const DEBUG_MARKERS = debugMode && false; // Set to true to enable debug output
+    
     // Remove duplicate placeholders as a final safety check
     displayText = displayText
       .replace(/(\[PAGE_IMAGE_\d+\])\s+(\1)(\s|$)/g, '$1$3')
       .replace(/(\[IMAGE_\d+\])\s+(\1)(\s|$)/g, '$1$3');
       
-    // Highlight the content markers for better visibility
     // Escape the HTML to prevent injection
     const escapedText = displayText
       .replace(/&/g, "&amp;")
@@ -301,14 +307,103 @@ export default function Results({
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
     
-    // Replace the markers with styled spans
-    return escapedText
-      .replace(/#FULL_PAGE_SCAN_START#/g, '<span class="marker page-marker start-marker">FULL_PAGE_SCAN_START</span>')
-      .replace(/#FULL_PAGE_SCAN_END#/g, '<span class="marker page-marker end-marker">FULL_PAGE_SCAN_END</span>')
-      .replace(/#IMAGE_CONTENT_START#/g, '<span class="marker image-marker start-marker">IMAGE_CONTENT_START</span>')
-      .replace(/#IMAGE_CONTENT_END#/g, '<span class="marker image-marker end-marker">IMAGE_CONTENT_END</span>')
-      .replace(/#TEXT_CONTENT_START#/g, '<span class="marker text-marker start-marker">TEXT_CONTENT_START</span>')
-      .replace(/#TEXT_CONTENT_END#/g, '<span class="marker text-marker end-marker">TEXT_CONTENT_END</span>');
+    // Helper function to escape regex special characters in marker patterns
+    const escapeRegexSpecialChars = (str) => {
+      if (!str) return '';
+      
+      // First escape all regex special characters
+      let escaped = str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Then replace {pageNumber} with the pattern for digits
+      // Using a more specific replacement to avoid issues with partial matches
+      escaped = escaped.replace(/\\\{pageNumber\\\}/g, '\\d+');
+      
+      // Add word boundary assertions for more precise matching
+      // This helps with partial matches like "PAGE" vs "PAGE_"
+      if (escaped.includes('PAGE') || escaped.includes('SCAN') || 
+          escaped.includes('IMAGE') || escaped.includes('TEXT')) {
+        // Make sure we're precisely matching these keywords
+        escaped = escaped
+          .replace(/PAGE/g, '(?:PAGE)')
+          .replace(/SCAN/g, '(?:SCAN)')
+          .replace(/IMAGE/g, '(?:IMAGE)')
+          .replace(/TEXT/g, '(?:TEXT)');
+      }
+      
+      return escaped;
+    };
+    
+    // Get marker patterns from format settings or use defaults
+    const pageHeadingPrefix = escapeRegexSpecialChars(formatSettings?.contentTypes?.pageHeading?.prefix || DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.prefix);
+    const pageHeadingSuffix = escapeRegexSpecialChars(formatSettings?.contentTypes?.pageHeading?.suffix || DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.suffix);
+    
+    const pageScanPrefix = escapeRegexSpecialChars(formatSettings?.contentTypes?.pageScan?.prefix || DEFAULT_FORMAT_SETTINGS.contentTypes.pageScan.prefix);
+    const pageScanSuffix = escapeRegexSpecialChars(formatSettings?.contentTypes?.pageScan?.suffix || DEFAULT_FORMAT_SETTINGS.contentTypes.pageScan.suffix);
+    
+    const imageContentPrefix = escapeRegexSpecialChars(formatSettings?.contentTypes?.image?.prefix || DEFAULT_FORMAT_SETTINGS.contentTypes.image.prefix);
+    const imageContentSuffix = escapeRegexSpecialChars(formatSettings?.contentTypes?.image?.suffix || DEFAULT_FORMAT_SETTINGS.contentTypes.image.suffix);
+    
+    const textContentPrefix = escapeRegexSpecialChars(formatSettings?.contentTypes?.text?.prefix || DEFAULT_FORMAT_SETTINGS.contentTypes.text.prefix);
+    const textContentSuffix = escapeRegexSpecialChars(formatSettings?.contentTypes?.text?.suffix || DEFAULT_FORMAT_SETTINGS.contentTypes.text.suffix);
+    
+    if (DEBUG_MARKERS) {
+      console.log('Marker patterns:', {
+        pageHeadingPrefix, pageHeadingSuffix,
+        pageScanPrefix, pageScanSuffix,
+        imageContentPrefix, imageContentSuffix,
+        textContentPrefix, textContentSuffix
+      });
+      
+      // Log actual marker occurrences in the text
+      console.log('Page heading markers in text:',
+        escapedText.match(new RegExp(pageHeadingPrefix, 'g')) || [], 
+        escapedText.match(new RegExp(pageHeadingSuffix, 'g')) || []);
+      console.log('Page scan markers in text:',
+        escapedText.match(new RegExp(pageScanPrefix, 'g')) || [], 
+        escapedText.match(new RegExp(pageScanSuffix, 'g')) || []);
+    }
+    
+    // Replace the markers with styled spans - preserve exact marker text
+    let formattedDisplayText = escapedText;
+    
+    // Apply replacements for each marker type
+    // Page heading markers
+    formattedDisplayText = formattedDisplayText
+      .replace(new RegExp(`(${pageHeadingPrefix})`, 'g'), '<span class="marker page-heading-marker start-marker">$1</span>')
+      .replace(new RegExp(`(${pageHeadingSuffix})`, 'g'), '<span class="marker page-heading-marker end-marker">$1</span>');
+    
+    // Full page scan markers - ensure these are properly styled as page-marker class
+    formattedDisplayText = formattedDisplayText
+      .replace(new RegExp(`(${pageScanPrefix})`, 'g'), '<span class="marker page-marker start-marker">$1</span>')
+      .replace(new RegExp(`(${pageScanSuffix})`, 'g'), '<span class="marker page-marker end-marker">$1</span>');
+    
+    // Image content markers
+    formattedDisplayText = formattedDisplayText
+      .replace(new RegExp(`(${imageContentPrefix})`, 'g'), '<span class="marker image-marker start-marker">$1</span>')
+      .replace(new RegExp(`(${imageContentSuffix})`, 'g'), '<span class="marker image-marker end-marker">$1</span>');
+    
+    // Text content markers
+    formattedDisplayText = formattedDisplayText
+      .replace(new RegExp(`(${textContentPrefix})`, 'g'), '<span class="marker text-marker start-marker">$1</span>')
+      .replace(new RegExp(`(${textContentSuffix})`, 'g'), '<span class="marker text-marker end-marker">$1</span>');
+    
+    // Handle any exact patterns that might have been missed by the dynamic approach
+    // This ensures backward compatibility with any hardcoded markers
+    formattedDisplayText = formattedDisplayText
+      // Page markers (fallback for any that weren't caught by the dynamic regex)
+      .replace(/(#PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker page-heading-marker start-marker">$1</span>')
+      .replace(/(#PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker page-heading-marker end-marker">$1</span>')
+      // Full page scan markers (fallback)
+      .replace(/(#FULL_PAGE_SCAN_PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker page-marker start-marker">$1</span>')
+      .replace(/(#FULL_PAGE_SCAN_PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker page-marker end-marker">$1</span>')
+      // Image content markers (fallback)
+      .replace(/(#IMAGE_CONTENT_PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker image-marker start-marker">$1</span>')
+      .replace(/(#IMAGE_CONTENT_PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker image-marker end-marker">$1</span>')
+      // Text content markers (fallback)
+      .replace(/(#TEXT_CONTENT_PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker text-marker start-marker">$1</span>')
+      .replace(/(#TEXT_CONTENT_PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker text-marker end-marker">$1</span>');
+    
+    return formattedDisplayText;
   };
 
   // Get stats on the extraction results 
@@ -390,34 +485,71 @@ export default function Results({
             {`
               .marker {
                 display: inline-block;
-                padding: 2px 5px;
-                margin: 1px 0;
-                border-radius: 3px;
+                padding: 4px 8px;
+                margin: 3px 1px;
+                border-radius: 4px;
                 font-family: 'Courier New', monospace;
-                font-size: 0.8rem;
+                font-size: 0.9rem;
                 font-weight: bold;
                 color: #fff;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+                letter-spacing: 0.7px;
+                transition: all 0.2s ease;
+                white-space: nowrap;
+                user-select: none;
               }
+              /* Page heading markers - dark gray */
+              .page-heading-marker {
+                background-color: #424242;
+                border: 1px solid #212121;
+                color: #ffffff;
+              }
+              /* Page scan markers - green */
               .page-marker {
                 background-color: #2e7d32;
+                border: 1px solid #1b5e20;
+                color: #ffffff;
               }
+              /* Image content markers - blue */
               .image-marker {
                 background-color: #1976d2;
+                border: 1px solid #0d47a1;
+                color: #ffffff;
               }
+              /* Text content markers - purple */
               .text-marker {
                 background-color: #6a1b9a;
+                border: 1px solid #4a148c;
+                color: #ffffff;
               }
+              /* Start markers with left border indicator */
               .start-marker {
-                border-left: 4px solid rgba(255, 255, 255, 0.7);
+                border-left: 4px solid rgba(255, 255, 255, 0.8);
               }
+              /* End markers with right border indicator */
               .end-marker {
-                border-right: 4px solid rgba(255, 255, 255, 0.7);
+                border-right: 4px solid rgba(255, 255, 255, 0.8);
               }
+              /* Add arrow indicator for start markers */
               .start-marker:before {
                 content: "▶ ";
+                opacity: 0.9;
               }
+              /* Add arrow indicator for end markers */
               .end-marker:after {
                 content: " ◀";
+                opacity: 0.9;
+              }
+              /* Add hover effects for better user experience */
+              .marker:hover {
+                filter: brightness(110%);
+                box-shadow: 0 3px 6px rgba(0,0,0,0.2);
+                transform: translateY(-1px);
+                cursor: default;
+              }
+              /* Ensure all markers are treated as inline blocks */
+              span.marker {
+                display: inline-block !important;
               }
             `}
           </style>
@@ -903,15 +1035,36 @@ export default function Results({
               />
               
               {(formatSettings?.pageIndicators?.includePageHeadings ?? DEFAULT_FORMAT_SETTINGS.pageIndicators.includePageHeadings) && (
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Page Heading Format"
-                  value={formatSettings?.pageIndicators?.pageHeadingFormat ?? DEFAULT_FORMAT_SETTINGS.pageIndicators.pageHeadingFormat}
-                  onChange={(e) => handleFormatChange('pageIndicators.pageHeadingFormat', e.target.value)}
-                  helperText="Use {pageNumber} for page numbers and \n for line breaks"
-                  margin="dense"
-                />
+                <>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Page Heading Format"
+                    value={formatSettings?.pageIndicators?.pageHeadingFormat ?? DEFAULT_FORMAT_SETTINGS.pageIndicators.pageHeadingFormat}
+                    onChange={(e) => handleFormatChange('pageIndicators.pageHeadingFormat', e.target.value)}
+                    helperText="Use {pageNumber} for page numbers and \n for line breaks"
+                    margin="dense"
+                  />
+                  
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 0.5 }}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="Page Heading Prefix Marker"
+                      value={formatSettings?.contentTypes?.pageHeading?.prefix ?? DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.prefix}
+                      onChange={(e) => handleFormatChange('contentTypes.pageHeading.prefix', e.target.value)}
+                      margin="dense"
+                    />
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="Page Heading Suffix Marker"
+                      value={formatSettings?.contentTypes?.pageHeading?.suffix ?? DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.suffix}
+                      onChange={(e) => handleFormatChange('contentTypes.pageHeading.suffix', e.target.value)}
+                      margin="dense"
+                    />
+                  </Stack>
+                </>
               )}
               
             <Divider sx={{ my: 1 }} />
