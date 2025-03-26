@@ -8,6 +8,13 @@ import { withRetry } from './retryUtils';
  * @param {string} base64Image - Base64-encoded image data (with or without the data URI prefix)
  * @param {string} apiKey - OpenAI API key
  * @param {Object} options - Additional options
+ * @param {string} options.model - OpenAI model to use, defaults to 'latest'
+ * @param {number} options.temperature - Temperature for model generation, defaults to 0.7
+ * @param {number} options.maxTokens - Maximum tokens to generate, defaults to 1000
+ * @param {number} options.retryCount - Number of retries for API errors, defaults to 2
+ * @param {string} options.analysisType - Type of analysis to perform: 'general' or 'page_description', defaults to 'general'
+ * @param {boolean} options.isForcedScan - Flag indicating if this is a forced page scan, defaults to false
+ * @param {number} options.maxRefusalRetries - Maximum number of retries for refusal detection, defaults to 3
  * @returns {Promise<Object>} Analysis results including the response
  */
 export async function analyzeImage(base64Image, apiKey, options = {}) {
@@ -18,8 +25,8 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
     maxTokens = 1000,
     retryCount = 2,
     analysisType = 'general',
-    instructions = null, // Custom instructions support
-    isForcedScan = false, // Add option to indicate this is a forced page scan
+    isForcedScan = false, // Flag to indicate if this is a forced page scan
+    maxRefusalRetries = 3,
     // ... other existing options
   } = options;
 
@@ -45,34 +52,27 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
 
   // Track refusal retries separately
   let refusalRetryCount = 0;
-  const maxRefusalRetries = options.maxRefusalRetries || 3;
 
   // Function to perform basic image analysis without refusal checking
   const performBasicAnalysis = async () => {
     try {
-      // Prepare prompt based on analysis type or custom instructions
-      let prompt = "Describe what you see in this image in detail."; // Default prompt
+      // Determine prompt based ONLY on analysis type
+      let prompt;
       
-      if (instructions) {
-        // Use custom instructions if provided
-        prompt = instructions;
-      } else if (isForcedScan) {
-        // Special prompt for forced page scans
-        prompt = "This is a full page scan from a PDF. Describe the layout, content, and structure of this page, including any text areas, tables, forms, or visual elements.";
-      } else {
-        // Otherwise, use default prompts based on analysis type
-        switch (analysisType) {
-          case 'general':
-            prompt = "Describe what you see in this image in detail.";
-            break;
-          case 'page_description':
-            prompt = "This is a scan of a PDF page. Describe the layout, content, and any visible elements on this page.";
-            break;
-          // ... add other analysis types as needed
-          default:
-            prompt = "Describe what you see in this image in detail.";
-        }
-      }
+      // Check for custom prompts in localStorage first
+      const customGeneralPrompt = localStorage.getItem('pdf_processor_general_image_prompt');
+      const customPageScanPrompt = localStorage.getItem('pdf_processor_page_scan_prompt');
+      
+      // Use custom prompts if available, otherwise use defaults
+      switch (analysisType) {
+        case 'page_description':
+          prompt = customPageScanPrompt || 
+            "This is an image of a page from a PDF document. Make sure to extract ALL the visual information. First, extract and describe all the visible graphics, then transcribe all the text on the document.";
+          break;
+        case 'general':
+        default:
+          // Default to general image analysis if an unknown type is provided
+          prompt = customGeneralPrompt }
       
       // Make API request to OpenAI with preset prompt
       const response = await openai.chat.completions.create({

@@ -28,6 +28,21 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
   const isRefused = isProcessed && analysis.success && analysis.refusalDetected;
   const isFailed = isProcessed && !analysis.success;
 
+  // Determine image type
+  const getImageType = () => {
+    if (image.isForcedScan) {
+      return { label: 'Forced Page Scan', color: 'secondary' };
+    } else if (image.isFullPage && image.isScanned) {
+      return { label: 'Full Page Scan', color: 'info' };
+    } else if (image.isFullPage) {
+      return { label: 'Full Page Content', color: 'info' };
+    } else {
+      return { label: 'Regular Image', color: 'default' };
+    }
+  };
+
+  const imageType = getImageType();
+
   return (
     <Modal
       open={open}
@@ -113,6 +128,21 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
                 size="small"
               />
             )}
+
+            <Chip 
+              label={imageType.label}
+              color={imageType.color}
+              variant="outlined"
+              size="small"
+            />
+
+            {image.scanReason && (
+              <Chip 
+                label={`Reason: ${image.scanReason.replace(/_/g, ' ')}`}
+                variant="outlined"
+                size="small"
+              />
+            )}
           </Stack>
         </Box>
 
@@ -128,26 +158,76 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
           <Box sx={{ 
             width: { xs: '100%', sm: '50%' },
             display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'flex-start',
-            border: '1px solid rgba(255,255,255,0.1)',
-            borderRadius: 1,
-            p: 1,
-            bgcolor: 'rgba(0,0,0,0.2)',
-            height: { xs: '30vh', sm: '60vh' },
+            flexDirection: 'column',
+            gap: 2,
             overflow: 'hidden',
           }}>
-            <Box 
-              component="img"
-              src={image.dataURL}
-              alt={`Image from page ${image.pageNumber}`}
-              sx={{ 
-                maxWidth: '100%',
-                maxHeight: '100%',
-                objectFit: 'contain',
-                filter: !isSuccessful ? 'saturate(0.3)' : 'none',
-              }}
-            />
+            {/* Image Container */}
+            <Box sx={{
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'flex-start',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 1,
+              p: 1,
+              bgcolor: 'rgba(0,0,0,0.2)',
+              height: { xs: '25vh', sm: '50vh' },
+              overflow: 'hidden',
+            }}>
+              <Box 
+                component="img"
+                src={image.dataURL}
+                alt={`Image from page ${image.pageNumber}`}
+                sx={{ 
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  objectFit: 'contain',
+                  filter: !isSuccessful ? 'saturate(0.3)' : 'none',
+                }}
+              />
+            </Box>
+            
+            {/* Detailed Image Properties */}
+            <Box sx={{
+              p: 1,
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 1,
+              fontSize: '0.75rem',
+              overflow: 'auto',
+              maxHeight: '10vh',
+            }}>
+              <Typography variant="subtitle2" gutterBottom>
+                Image Properties
+              </Typography>
+              <Box component="dl" sx={{ 
+                display: 'grid', 
+                gridTemplateColumns: 'max-content 1fr',
+                gap: '0.25rem 0.75rem',
+                m: 0
+              }}>
+                <Box component="dt" sx={{ fontWeight: 'bold' }}>ID:</Box>
+                <Box component="dd" sx={{ m: 0 }}>{image.id}</Box>
+                
+                <Box component="dt" sx={{ fontWeight: 'bold' }}>Type:</Box>
+                <Box component="dd" sx={{ m: 0 }}>{imageType.label}</Box>
+                
+                <Box component="dt" sx={{ fontWeight: 'bold' }}>Full Page:</Box>
+                <Box component="dd" sx={{ m: 0 }}>{image.isFullPage ? 'Yes' : 'No'}</Box>
+                
+                <Box component="dt" sx={{ fontWeight: 'bold' }}>Scanned:</Box>
+                <Box component="dd" sx={{ m: 0 }}>{image.isScanned ? 'Yes' : 'No'}</Box>
+                
+                <Box component="dt" sx={{ fontWeight: 'bold' }}>Forced Scan:</Box>
+                <Box component="dd" sx={{ m: 0 }}>{image.isForcedScan ? 'Yes' : 'No'}</Box>
+                
+                {image.scanReason && (
+                  <>
+                    <Box component="dt" sx={{ fontWeight: 'bold' }}>Scan Reason:</Box>
+                    <Box component="dd" sx={{ m: 0 }}>{image.scanReason}</Box>
+                  </>
+                )}
+              </Box>
+            </Box>
           </Box>
 
           {/* Analysis Text Section */}
@@ -177,9 +257,20 @@ export default function ImageDetailModal({ open, onClose, image, analysis }) {
             </Typography>
 
             {isSuccessful && analysis.text ? (
-              <Typography variant="body2" sx={{ whiteSpace: 'pre-line' }}>
-                {analysis.text}
-              </Typography>
+              <>
+                {analysis.analysisType && (
+                  <Chip 
+                    label={`Analysis Type: ${analysis.analysisType === 'page_description' ? 'Page Description' : 'General Image'}`}
+                    size="small"
+                    color="primary"
+                    variant="outlined"
+                    sx={{ mb: 1 }}
+                  />
+                )}
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-line' }}>
+                  {analysis.text}
+                </Typography>
+              </>
             ) : isRefused ? (
               <Typography variant="body2" color="warning.main">
                 No content could be extracted from this image.

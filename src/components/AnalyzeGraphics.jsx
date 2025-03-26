@@ -213,19 +213,26 @@ export default function AnalyzeGraphics({
         addLogMessage(`Starting analysis of ${totalImageCount} images...`);
         addLogMessage(`Using model: ${model}`);
         
-        // Check for forced scans
+        // Check for different types of scans and regular images
         const forcedScans = imagesToAnalyze.filter(img => img.isForcedScan === true);
+        const fullPageScans = imagesToAnalyze.filter(
+          img => img.isFullPage === true && img.isForcedScan !== true
+        );
+        const regularImages = imagesToAnalyze.filter(
+          img => !img.isForcedScan && !img.isFullPage
+        );
+        
+        // Log detailed breakdown of image types
         if (forcedScans.length > 0) {
-          addLogMessage(`Processing ${forcedScans.length} forced scans from "Scan All Pages" feature`);
+          addLogMessage(`Processing ${forcedScans.length} forced page scans from "Scan All Pages" feature`);
         }
         
-        // Prepare each image for analysis, adding custom properties as needed
-        for (const image of imagesToAnalyze) {
-          // Special handling for forced scans
-          if (image.isForcedScan === true) {
-            // Add property to use special prompt
-            image.isPageDescription = true;
-          }
+        if (fullPageScans.length > 0) {
+          addLogMessage(`Processing ${fullPageScans.length} full page content images`);
+        }
+        
+        if (regularImages.length > 0) {
+          addLogMessage(`Processing ${regularImages.length} regular images`);
         }
         
         // Set up batch processing options
@@ -234,16 +241,8 @@ export default function AnalyzeGraphics({
           model,
           temperature: 0.7,
           maxTokens: 1000,
-          maxRefusalRetries: 2,
-          
-          // Define custom instructions for different image types
-          getCustomInstructions: (image) => {
-            if (image.isPageDescription || image.isForcedScan) {
-              return "This is a complete page from a PDF document. Describe the overall layout and content of this page, including text organization, any tables, forms, or visual elements you can see.";
-            }
-            // Default to null for regular images (use default prompt)
-            return null;
-          }
+          maxRefusalRetries: 3
+          // No need to specify analysisType here as it's determined per image
         };
         
         // Set up callbacks for batch processing

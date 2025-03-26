@@ -39,7 +39,15 @@ const STORAGE_KEYS = {
   MAX_REQUESTS: 'pdf_processor_max_requests',
   SHOW_ADVANCED: 'pdf_processor_show_advanced',
   DEBUG_MODE: 'pdf_processor_debug_mode',
-  AUTO_PROGRESS: 'pdf_processor_auto_progress'
+  AUTO_PROGRESS: 'pdf_processor_auto_progress',
+  GENERAL_IMAGE_PROMPT: 'pdf_processor_general_image_prompt',
+  PAGE_SCAN_PROMPT: 'pdf_processor_page_scan_prompt'
+}
+
+// Default prompts
+const DEFAULT_PROMPTS = {
+  GENERAL_IMAGE: "This is an image or a visual within a PDF document. Describe it fully. Transcribe any text visible in the image. Describe it, focusing on the meaning and information it is trying to convey.",
+  PAGE_SCAN: "This is an image of a page from a PDF document. Make sure you extract ALL the visual information. First extract and describe all the visible graphics, then transcribe all the text on the document. Then describe the connections and relationships visible on the page."
 }
 
 // Helper function to safely parse stored numbers
@@ -81,6 +89,14 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
   const [scanAllPages, setScanAllPages] = useState(() => {
     return localStorage.getItem('scanAllPages') === "true";
   });
+  
+  // Custom prompts state
+  const [generalImagePrompt, setGeneralImagePrompt] = useState(() =>
+    localStorage.getItem(STORAGE_KEYS.GENERAL_IMAGE_PROMPT) || DEFAULT_PROMPTS.GENERAL_IMAGE
+  )
+  const [pageScanPrompt, setPageScanPrompt] = useState(() =>
+    localStorage.getItem(STORAGE_KEYS.PAGE_SCAN_PROMPT) || DEFAULT_PROMPTS.PAGE_SCAN
+  )
   
   // API key validation states
   const [validationStatus, setValidationStatus] = useState('idle') // 'idle', 'validating', 'valid', 'invalid'
@@ -138,6 +154,15 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
       onAutoProgressChange(autoProgress)
     }
   }, [autoProgress, onAutoProgressChange])
+  
+  // Save custom prompts to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.GENERAL_IMAGE_PROMPT, generalImagePrompt)
+  }, [generalImagePrompt])
+  
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.PAGE_SCAN_PROMPT, pageScanPrompt)
+  }, [pageScanPrompt])
   
   // Handle API key validation
   const validateApiKey = async (key) => {
@@ -455,16 +480,99 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
           </FormControl>
           
           {/* Scan All Pages toggle */}
-          <FormControlLabel
-            control={
-              <Switch
-                checked={scanAllPages}
-                onChange={handleScanAllPagesToggle}
-                color="primary"
-              />
-            }
-            label="Scan All Pages (generates descriptions for pages without images)"
-          />
+          <FormControl component="fieldset" variant="standard">
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={scanAllPages}
+                  onChange={handleScanAllPagesToggle}
+                  color="primary"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>Scan All Pages</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Generates descriptions for pages without images
+                  </Typography>
+                </Box>
+              }
+            />
+          </FormControl>
+          
+          {/* Custom Prompts Section */}
+          <Accordion 
+            elevation={0}
+            sx={{ 
+              '&:before': { display: 'none' },
+              border: '1px solid rgba(0, 0, 0, 0.12)',
+              borderRadius: '4px',
+              mt: 2
+            }}
+          >
+            <AccordionSummary
+              expandIcon={<ExpandMoreIcon />}
+              aria-controls="custom-prompts-content"
+              id="custom-prompts-header"
+            >
+              <Typography variant="subtitle1">Custom AI Prompts</Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Stack spacing={3}>
+                <Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                      General Image Analysis Prompt
+                    </Typography>
+                    <Button 
+                      size="small" 
+                      onClick={() => setGeneralImagePrompt(DEFAULT_PROMPTS.GENERAL_IMAGE)}
+                      sx={{ fontSize: '0.7rem' }}
+                    >
+                      Reset to Default
+                    </Button>
+                  </Box>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={4}
+                    value={generalImagePrompt}
+                    onChange={(e) => setGeneralImagePrompt(e.target.value)}
+                    variant="outlined"
+                    size="small"
+                    placeholder="Enter custom prompt for general image analysis"
+                    helperText="This prompt is used when analyzing regular images"
+                  />
+                </Box>
+                
+                <Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                      Page Scan Analysis Prompt
+                    </Typography>
+                    <Button 
+                      size="small" 
+                      onClick={() => setPageScanPrompt(DEFAULT_PROMPTS.PAGE_SCAN)}
+                      sx={{ fontSize: '0.7rem' }}
+                    >
+                      Reset to Default
+                    </Button>
+                  </Box>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={4}
+                    value={pageScanPrompt}
+                    onChange={(e) => setPageScanPrompt(e.target.value)}
+                    variant="outlined"
+                    size="small"
+                    placeholder="Enter custom prompt for page scan analysis"
+                    helperText="This prompt is used when analyzing full pages or forced page scans"
+                  />
+                </Box>
+              </Stack>
+            </AccordionDetails>
+          </Accordion>
         </Stack>
       </Collapse>
     </Stack>
