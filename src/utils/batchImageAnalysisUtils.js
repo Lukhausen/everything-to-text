@@ -21,7 +21,6 @@ export async function processBatchImages(
     modelVersion = 'latest',
     analysisType = 'general', // Default analysis type, but we use per-image type
     maxConcurrentRequests = 100,
-    maxRefusalRetries = 3,
     temperature = 0.7,
     maxTokens = 1000,
     ...restOptions
@@ -39,7 +38,6 @@ export async function processBatchImages(
   // Set up processing options
   const processingOptions = {
     maxConcurrentRequests,
-    maxRefusalRetries,
     temperature,
     maxTokens,
     model: modelVersion,
@@ -138,7 +136,7 @@ export async function processBatchImages(
           retryCount, 
           analysisType: imageAnalysisType, // Use image-specific analysis type
           isForcedScan: !!image.isForcedScan, // Still include this flag for backward compatibility
-          maxRefusalRetries: processingOptions.maxRefusalRetries,
+          // maxRefusalRetries is now read directly from localStorage
           temperature: processingOptions.temperature,
           maxTokens: processingOptions.maxTokens
         }

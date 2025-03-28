@@ -38,11 +38,11 @@ export async function detectRefusal(responseText, apiKey, options = {}) {
       messages: [
         {
           role: "system",
-          content: "You detect when text contains a refusal or safety response from an AI system."
+          content: "You detect when text contains a refusal, safety response, or a noninformational response like 'I'm sorry, I can't answer that question.'  or 'there is nothing I can see in the image.' from an AI system."
         },
         {
           role: "user",
-          content: `Determine if this AI response contains a refusal to answer or inability to analyze images. Response: "${truncatedText}"`
+          content: `Determine if this AI response contains a refusal to answer or inability to provide any usefull information. Response: "${truncatedText}"`
         }
       ],
       temperature: options.temperature || 0.1,
@@ -50,14 +50,14 @@ export async function detectRefusal(responseText, apiKey, options = {}) {
       functions: [
         {
           name: "is_refusal",
-          description: "Returns a boolean indicating whether the input is a refusal or not.",
+          description: "Returns a boolean indicating whether the input is a refusal or noninformational response or not.",
           parameters: {
             type: "object",
             required: ["is_refusal"],
             properties: {
               is_refusal: {
                 type: "boolean",
-                description: "Set to true if a refusal is detected, false otherwise."
+                description: "Set to true if a refusal or noninformational response is detected, false otherwise."
               }
             }
           }

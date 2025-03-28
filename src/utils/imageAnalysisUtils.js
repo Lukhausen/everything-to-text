@@ -2,6 +2,11 @@ import OpenAI from 'openai';
 import { detectRefusal } from './refusalDetectionUtils';
 import { withRetry } from './retryUtils';
 
+// Storage keys for consistency
+const STORAGE_KEYS = {
+  MAX_REFUSAL_RETRIES: 'pdf_processor_max_refusal_retries'
+};
+
 /**
  * Analyzes an image using OpenAI's vision capabilities with automatic retries
  * and refusal detection
@@ -14,11 +19,14 @@ import { withRetry } from './retryUtils';
  * @param {number} options.retryCount - Number of retries for API errors, defaults to 2
  * @param {string} options.analysisType - Type of analysis to perform: 'general' or 'page_description', defaults to 'general'
  * @param {boolean} options.isForcedScan - Flag indicating if this is a forced page scan, defaults to false
- * @param {number} options.maxRefusalRetries - Maximum number of retries for refusal detection, defaults to 3
  * @returns {Promise<Object>} Analysis results including the response
  */
 export async function analyzeImage(base64Image, apiKey, options = {}) {
-  // Destructure options with defaults
+  // Read maxRefusalRetries directly from localStorage (with fallback)
+  const storedMaxRefusalRetries = localStorage.getItem(STORAGE_KEYS.MAX_REFUSAL_RETRIES);
+  const defaultMaxRefusalRetries = storedMaxRefusalRetries ? parseInt(storedMaxRefusalRetries, 10) : 3;
+  
+  // Destructure options with defaults, removing maxRefusalRetries from expected options
   const {
     model = 'latest',
     temperature = 0.7,
@@ -26,9 +34,13 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
     retryCount = 2,
     analysisType = 'general',
     isForcedScan = false, // Flag to indicate if this is a forced page scan
-    maxRefusalRetries = 3,
+    // Use maxRefusalRetries from options only as fallback if localStorage value isn't available
+    maxRefusalRetries = defaultMaxRefusalRetries,
     // ... other existing options
   } = options;
+
+  // Log maxRefusalRetries source for debugging
+  console.log(`Using maxRefusalRetries=${maxRefusalRetries} (localStorage value: ${storedMaxRefusalRetries})`);
 
   // Validate required parameters
   if (!apiKey) {

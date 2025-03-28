@@ -41,7 +41,8 @@ const STORAGE_KEYS = {
   DEBUG_MODE: 'pdf_processor_debug_mode',
   AUTO_PROGRESS: 'pdf_processor_auto_progress',
   GENERAL_IMAGE_PROMPT: 'pdf_processor_general_image_prompt',
-  PAGE_SCAN_PROMPT: 'pdf_processor_page_scan_prompt'
+  PAGE_SCAN_PROMPT: 'pdf_processor_page_scan_prompt',
+  MAX_REFUSAL_RETRIES: 'pdf_processor_max_refusal_retries'
 }
 
 // Default prompts
@@ -76,6 +77,9 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
   const [model, setModel] = useState(() => localStorage.getItem(STORAGE_KEYS.MODEL) || 'gpt-4o-mini')
   const [maxConcurrentRequests, setMaxConcurrentRequests] = useState(() => 
     safeParseInt(localStorage.getItem(STORAGE_KEYS.MAX_REQUESTS), 100)
+  )
+  const [maxRefusalRetries, setMaxRefusalRetries] = useState(() => 
+    safeParseInt(localStorage.getItem(STORAGE_KEYS.MAX_REFUSAL_RETRIES), 3)
   )
   const [showAdvanced, setShowAdvanced] = useState(() => 
     safeParseBoolean(localStorage.getItem(STORAGE_KEYS.SHOW_ADVANCED), false)
@@ -163,6 +167,14 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.PAGE_SCAN_PROMPT, pageScanPrompt)
   }, [pageScanPrompt])
+  
+  // Save max refusal retries to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.MAX_REFUSAL_RETRIES, maxRefusalRetries.toString())
+    if (onSettingsChange) {
+      onSettingsChange('maxRefusalRetries', maxRefusalRetries)
+    }
+  }, [maxRefusalRetries, onSettingsChange])
   
   // Handle API key validation
   const validateApiKey = async (key) => {
@@ -499,6 +511,44 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
               }
             />
           </FormControl>
+          
+          <Box>
+            <Typography gutterBottom variant="body2" sx={{ fontWeight: 'medium' }}>
+              Maximum Refusal Retries: {maxRefusalRetries}
+            </Typography>
+            <Slider
+              value={maxRefusalRetries}
+              onChange={(_, value) => setMaxRefusalRetries(value)}
+              min={0}
+              max={5}
+              step={1}
+              marks={[
+                { value: 0, label: '0' },
+                { value: 1, label: '1' },
+                { value: 2, label: '2' },
+                { value: 3, label: '3' },
+                { value: 4, label: '4' },
+                { value: 5, label: '5' },
+              ]}
+              valueLabelDisplay="auto"
+              sx={{
+                '& .MuiSlider-thumb': {
+                  '&:hover, &.Mui-focusVisible': {
+                    boxShadow: `0 0 0 8px alpha('primary.main', 0.16)`
+                  }
+                },
+                '& .MuiSlider-track': {
+                  backgroundColor: 'primary.main'
+                },
+                '& .MuiSlider-rail': {
+                  opacity: 0.28
+                }
+              }}
+            />
+            <FormHelperText>
+              Number of times to retry when the AI refuses to analyze an image. Higher values may improve results but increase processing time.
+            </FormHelperText>
+          </Box>
           
           {/* Custom Prompts Section */}
           <Accordion 

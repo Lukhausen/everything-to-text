@@ -68,13 +68,18 @@ export default function AnalyzeGraphics({
 
   // Get API key from localStorage (set in Settings component)
   const apiKey = localStorage.getItem('pdf_processor_api_key')
+  
   // Get model from localStorage (set in Settings component)
   const model = localStorage.getItem('pdf_processor_model') || 'gpt-4o-mini'
+  
   // Get max concurrent requests from localStorage (set in Settings component)
   const maxConcurrentRequests = parseInt(
     localStorage.getItem('pdf_processor_max_requests') || '100', 
     10
   )
+  
+  // Note: maxRefusalRetries is now read directly by imageAnalysisUtils.js from localStorage,
+  // so we don't need to retrieve or pass it here
 
   // Make sure model is initialized on component mount
   useEffect(() => {
@@ -240,8 +245,7 @@ export default function AnalyzeGraphics({
           maxConcurrentRequests,
           model,
           temperature: 0.7,
-          maxTokens: 1000,
-          maxRefusalRetries: 3
+          maxTokens: 1000
           // No need to specify analysisType here as it's determined per image
         };
         

@@ -493,6 +493,7 @@ function App() {
               onFileSelect={handleFileSelect} 
               onDebugModeChange={handleDebugModeChange}
               onAutoProgressChange={handleAutoProgressChange}
+              onSettingsChange={handleSettingsChange}
               hasNavigatedAway={hasNavigatedFromUpload}
             />
           </>
@@ -663,6 +664,15 @@ function App() {
         setSnackbarMessage("This setting will take effect when you process another PDF.");
         setSnackbarOpen(true);
       }
+    } else if (setting === 'maxRefusalRetries') {
+      // No need to store it here as the Settings component already updates localStorage
+      // Just show notification if we already have results
+      if (pdfResult || analysisResult) {
+        setSnackbarMessage("Refusal retry setting will take effect on the next analysis.");
+        setSnackbarOpen(true);
+      }
+      
+      console.log(`Updated max refusal retries to ${value}`);
     }
     // Handle other settings if needed
   };

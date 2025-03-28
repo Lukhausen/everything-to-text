@@ -19,7 +19,7 @@ import {
 } from '@mui/icons-material'
 import Settings from './Settings'
 
-const FileUpload = ({ onFileSelect, onDebugModeChange, onAutoProgressChange, hasNavigatedAway }) => {
+const FileUpload = ({ onFileSelect, onDebugModeChange, onAutoProgressChange, onSettingsChange, hasNavigatedAway }) => {
   const [file, setFile] = useState(null)
   const [error, setError] = useState(null)
   const [dragActive, setDragActive] = useState(false)
@@ -157,6 +157,7 @@ const FileUpload = ({ onFileSelect, onDebugModeChange, onAutoProgressChange, has
               <Settings
                 onDebugModeChange={onDebugModeChange}
                 onAutoProgressChange={onAutoProgressChange}
+                onSettingsChange={onSettingsChange}
               />
             </Box>
           </Collapse>
