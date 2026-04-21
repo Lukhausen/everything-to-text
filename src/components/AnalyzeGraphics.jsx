@@ -16,7 +16,6 @@ import {
   Card,
   CardMedia,
   CardContent,
-  IconButton,
   Tooltip,
 } from '@mui/material'
 import {
@@ -40,6 +39,9 @@ export default function AnalyzeGraphics({
   const [isProcessing, setIsProcessing] = useState(false)
   const [processingComplete, setProcessingComplete] = useState(false)
   const [error, setError] = useState(null)
+  // Set when we intentionally skip analysis (no API key, no images, etc.)
+  // so the UI can show an informational notice instead of a red error.
+  const [skipReason, setSkipReason] = useState(null)
   
   // Progress tracking
   const [progress, setProgress] = useState(0)
@@ -160,24 +162,33 @@ export default function AnalyzeGraphics({
     // Skip if no PDF result, or if processing is already complete, or if already processing,
     // or if we have existing results to use
     if (!pdfResult || processingComplete || processingRef.current || (skipAnalysis && existingResults)) return;
-    
-    // Skip if no API key
-    if (!apiKey) {
-      setError("API key is required for image analysis. Please set it in the Settings tab.");
-      return;
-    }
-    
-    // Skip if there are no images to analyze
-    if (!pdfResult.images || pdfResult.images.length === 0) {
-      setError("No images found in the PDF to analyze.");
-      // Set processing as complete with empty results
+
+    const hasImages = !!pdfResult.images && pdfResult.images.length > 0;
+
+    // The app is fully usable without an API key — we just skip the AI image
+    // analysis step and hand back the already-extracted text layer + image
+    // placeholders so the user still gets a Results view.
+    if (!apiKey || !hasImages) {
+      const reason = !apiKey
+        ? "No OpenAI API key set — image analysis is skipped. The extracted text layer is still available in the Results step. Add a key in Settings to enable AI image analysis."
+        : "No images found in the PDF to analyze.";
+
+      const skippedExtractedText = !apiKey
+        ? "Image analysis was skipped because no OpenAI API key is configured."
+        : "No images found in the PDF to analyze.";
+
       const emptyResult = {
         ...pdfResult,
         imageAnalysisResults: [],
-        extractedText: "No images found in the PDF to analyze."
+        analysisSkipped: true,
+        analysisSkippedReason: !apiKey ? 'no_api_key' : 'no_images',
+        extractedText: skippedExtractedText,
       };
+
+      setSkipReason(reason);
       setAnalysisResult(emptyResult);
       setProcessingComplete(true);
+      setProgress(100);
       onComplete(emptyResult);
       return;
     }
@@ -354,6 +365,18 @@ export default function AnalyzeGraphics({
           {error}
         </Alert>
       )}
+      {!error && skipReason && (
+        <Alert
+          severity="info"
+          sx={{
+            '& .MuiAlert-icon': {
+              color: 'primary.main'
+            }
+          }}
+        >
+          {skipReason}
+        </Alert>
+      )}
       
       <Paper
         sx={{
@@ -514,7 +537,7 @@ export default function AnalyzeGraphics({
               const isFailed = isProcessed && !analysis.success;
               
               return (
-                <Grid item xs={6} sm={4} md={3} key={image.id}>
+                <Grid size={{ xs: 6, sm: 4, md: 3 }} key={image.id}>
                   <Card 
                     sx={{ 
                       height: '100%',
@@ -655,7 +678,7 @@ export default function AnalyzeGraphics({
             })}
             
             {(!pdfResult || !pdfResult.images || pdfResult.images.length === 0) && (
-              <Grid item xs={12}>
+              <Grid size={{ xs: 12 }}>
                 <Typography variant="body2" color="text.secondary" align="center">
                   No images found in the PDF
                 </Typography>

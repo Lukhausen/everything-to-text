@@ -18,15 +18,16 @@ import {
   CircularProgress
 } from '@mui/material'
 import {
-  CheckCircle as CheckCircleIcon,
   RadioButtonUnchecked as ReadyIcon,
+  RestartAlt as RestartAltIcon,
+  KeyOff as KeyOffIcon,
 } from '@mui/icons-material'
 import FileUpload from './components/FileUpload'
 import ExtractGraphics from './components/ExtractGraphics'
 import AnalyzeGraphics from './components/AnalyzeGraphics'
 import Results from './components/Results'
 import Settings from './components/Settings'
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, Link as RouterLink } from 'react-router-dom'
 
 // Define the steps for our process
 const steps = [
@@ -59,9 +60,13 @@ function App() {
   const [processingStep, setProcessingStep] = useState(0)
   const [touched, setTouched] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
-  const [autoProgress, setAutoProgress] = useState(
-    localStorage.getItem('pdf_processor_auto_progress') === 'true'
-  )
+  // Default = true to match Settings.jsx. Was previously `=== 'true'` which
+  // resolved to `false` on first launch, contradicting the toggle UI which
+  // showed it ON by default.
+  const [autoProgress, setAutoProgress] = useState(() => {
+    const stored = localStorage.getItem('pdf_processor_auto_progress')
+    return stored === null ? true : stored === 'true'
+  })
   const [snackbarOpen, setSnackbarOpen] = useState(false)
   const [snackbarMessage, setSnackbarMessage] = useState('')
   const [apiKeySet, setApiKeySet] = useState(false)
@@ -119,27 +124,47 @@ function App() {
       localStorage.setItem('pdf_processor_model', 'gpt-4o-mini')
     }
     
-    // Set default concurrent requests if not already set
+    // Set default concurrent requests if not already set. Most OpenAI tier-1
+    // accounts cap vision requests around ~5 concurrent; the slider in
+    // Settings still lets power users push it higher.
     if (!localStorage.getItem('pdf_processor_max_requests')) {
-      localStorage.setItem('pdf_processor_max_requests', '100')
+      localStorage.setItem('pdf_processor_max_requests', '5')
     }
   }, [])
 
-  // Check if API key exists and is validated in localStorage
+  // Check if API key exists and is validated in localStorage. We avoid the
+  // previous setInterval polling by listening to:
+  //   - the native `storage` event (fires for changes in other tabs), and
+  //   - a custom `pdf_processor_settings_changed` event we dispatch from
+  //     Settings.jsx for same-tab updates.
   useEffect(() => {
     const checkApiKey = () => {
       const apiKey = localStorage.getItem('pdf_processor_api_key');
-      const apiKeyValidated = localStorage.getItem('pdf_processor_api_key_validated') === 'true';
+      const apiKeyValidated =
+        localStorage.getItem('pdf_processor_api_key_validated') === 'true';
       setApiKeySet(!!(apiKey && apiKey.trim() !== '' && apiKeyValidated));
     };
-    
-    // Check initially
+
     checkApiKey();
-    
-    // Set up an interval to check periodically (in case user adds API key in another tab)
-    const interval = setInterval(checkApiKey, 1000);
-    
-    return () => clearInterval(interval);
+
+    const onStorage = (event) => {
+      if (
+        !event.key ||
+        event.key === 'pdf_processor_api_key' ||
+        event.key === 'pdf_processor_api_key_validated'
+      ) {
+        checkApiKey();
+      }
+    };
+    const onLocalChange = () => checkApiKey();
+
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('pdf_processor_settings_changed', onLocalChange);
+
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('pdf_processor_settings_changed', onLocalChange);
+    };
   }, []);
 
   // Handle file selection
@@ -218,30 +243,38 @@ function App() {
     
     // Check if there are any images to analyze
     const hasImages = result && result.images && result.images.length > 0
-    
-    // If there are no images, we should skip the analysis step
-    if (!hasImages) {
-      // Set analysis result with empty images array to indicate completion
+
+    // The AI image-analysis step is optional. If there are no images, or no
+    // API key is configured, we short-circuit straight to the Results step
+    // with an empty analysis payload so the user can still copy/download
+    // the raw extracted text layer.
+    if (!hasImages || !apiKeySet) {
+      const skippedReason = !hasImages ? 'no_images' : 'no_api_key';
       const emptyAnalysisResult = {
         ...result,
         imageAnalysisResults: [],
-        extractedText: 'No images found in the PDF to analyze.'
-      }
-      setAnalysisResult(emptyAnalysisResult)
-      
+        analysisSkipped: true,
+        analysisSkippedReason: skippedReason,
+        extractedText:
+          skippedReason === 'no_images'
+            ? 'No images found in the PDF to analyze.'
+            : 'Image analysis was skipped because no OpenAI API key is configured.',
+      };
+      setAnalysisResult(emptyAnalysisResult);
+
       // Also update the processing step to indicate we've completed analysis
-      setProcessingStep(Math.max(processingStep, 3))
-      
+      setProcessingStep(Math.max(processingStep, 3));
+
       // If auto-progress is on and we're currently in step 1 or 2,
       // move directly to the Results step
       if (autoProgress && !touched && (activeStep === 1 || activeStep === 2)) {
-        setActiveStep(3) // Jump to Results step
+        setActiveStep(3); // Jump to Results step
       }
     } else if (autoProgress) {
       // Normal flow - start analysis immediately if auto progress is on
-      startAnalysis(result)
+      startAnalysis(result);
     }
-  }, [processingStep, autoProgress, touched, activeStep, startAnalysis, scanAllPages]);
+  }, [processingStep, autoProgress, touched, activeStep, startAnalysis, scanAllPages, apiKeySet]);
 
   // Function to start the PDF processing
   const startPdfProcessing = useCallback(() => {
@@ -387,18 +420,18 @@ function App() {
       setHasNavigatedFromUpload(true);
     }
     
-    // Check if API key is set before proceeding beyond first step
-    if (nextStep > 0 && !apiKeySet) {
-      setSnackbarMessage("Please add a valid OpenAI API key in the Settings section. Your key will be validated automatically when entered correctly.");
-      setSnackbarOpen(true);
-      return;
-    }
-    
+    // The API key is no longer required to navigate. When it's missing we
+    // simply skip the AI analysis step — see handlePdfProcessingComplete.
+
     // Special case for moving from Extract to Analyze
-    // Only skip analyze step if there are no images AND scanAllPages is disabled
-    if (activeStep === 1 && nextStep === 2 && pdfResult && 
-        (!pdfResult.images || pdfResult.images.length === 0) && !scanAllPages) {
-      // We have PDF result but no images and scanAllPages is not enabled - skip to Results
+    // Skip analyze if there are no images (and scanAllPages is off), or if
+    // there's no API key (analysis can't run anyway).
+    if (
+      activeStep === 1 &&
+      nextStep === 2 &&
+      pdfResult &&
+      ((!pdfResult.images || pdfResult.images.length === 0) && !scanAllPages || !apiKeySet)
+    ) {
       if (isStepAccessible(3)) {
         setActiveStep(3); // Jump to Results
         return;
@@ -436,21 +469,6 @@ function App() {
     setHasNavigatedFromUpload(false)
   }
 
-  // Helper to find the highest step the user has reached
-  const getHighestAccessibleStep = () => {
-    let highestStep = 0
-    
-    // Start from the highest step and work backwards
-    for (let i = steps.length - 1; i >= 0; i--) {
-      if (isStepAccessible(i)) {
-        highestStep = i
-        break
-      }
-    }
-    
-    return highestStep
-  }
-
   // Effect to automatically move to the processing step when processing changes
   // if user hasn't manually navigated
   useEffect(() => {
@@ -476,21 +494,24 @@ function App() {
         return (
           <>
             {!apiKeySet && (
-              <Alert 
-                severity="warning" 
-                sx={{ 
+              <Alert
+                severity="info"
+                sx={{
                   mb: 3,
                   '& .MuiAlert-icon': {
                     color: 'primary.main'
                   }
                 }}
               >
-                Please add your OpenAI API key in the Settings section below before continuing. 
-                Your API key will be validated automatically when entered correctly.
+                No OpenAI API key is set. You can still upload a PDF and get
+                the raw extracted text layer in the Results step. Add an API
+                key in Settings below to also analyze images and rasterized
+                page scans with AI.
               </Alert>
             )}
-            <FileUpload 
-              onFileSelect={handleFileSelect} 
+            <FileUpload
+              selectedFile={selectedFile}
+              onFileSelect={handleFileSelect}
               onDebugModeChange={handleDebugModeChange}
               onAutoProgressChange={handleAutoProgressChange}
               onSettingsChange={handleSettingsChange}
@@ -515,8 +536,47 @@ function App() {
           </Box>
         )
       case 2:
-        // Only show analysis component if we have PDF results
-        return pdfResult ? (
+        if (!pdfResult) {
+          return (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+              <Typography>Please complete the extraction process first</Typography>
+            </Box>
+          )
+        }
+        if (!apiKeySet) {
+          return (
+            <Alert
+              severity="info"
+              icon={<KeyOffIcon />}
+              sx={{
+                mb: 2,
+                '& .MuiAlert-icon': { color: 'primary.main' },
+              }}
+              action={
+                <Button
+                  component={RouterLink}
+                  to="/settings"
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                >
+                  Open Settings
+                </Button>
+              }
+            >
+              <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
+                AI image analysis was skipped
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                No OpenAI API key is configured, so the {pdfResult?.images?.length ?? 0}
+                {' '}image(s) found in this PDF could not be sent to a vision model.
+                The raw text layer is still available in Results. Add a key in
+                Settings to enable analysis on the next run.
+              </Typography>
+            </Alert>
+          )
+        }
+        return (
           <AnalyzeGraphics
             pdfResult={pdfResult}
             onComplete={handleAnalysisComplete}
@@ -525,10 +585,6 @@ function App() {
             debugMode={debugMode}
             scanAllPages={scanAllPages}
           />
-        ) : (
-          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-            <Typography>Please complete the extraction process first</Typography>
-          </Box>
         )
       case 3:
         // Only show results if we have analysis results
@@ -554,11 +610,6 @@ function App() {
 
   // Determine if the Next button should be disabled
   const isNextDisabled = (step) => {
-    // First, check if API key is set - required for all steps except the first one
-    if (step > 0 && !apiKeySet) {
-      return true;
-    }
-    
     switch(step) {
       case 0:
         return !selectedFile // Disabled if no file selected
@@ -572,61 +623,52 @@ function App() {
         return false
     }
   }
-  
-  // Determine if a step is clickable/accessible
+
+  // Determine if a step is clickable/accessible. Note: the API key is NOT
+  // required — without one the analysis step is automatically skipped and the
+  // user is taken straight to Results with the raw extracted text layer.
   const isStepAccessible = (stepIndex) => {
     // First step is always accessible
     if (stepIndex === 0) return true;
-    
-    // API key is required for all steps beyond the first
-    if (!apiKeySet) return false;
-    
+
     // Modified logic to allow accessing previous steps regardless of processing state
     // Current step and previous steps should always be accessible if their data is available
-    if (stepIndex <= activeStep) {
-      if (stepIndex === 1) return !!selectedFile;
-      if (stepIndex === 2) {
-        // Make Analyze step accessible if we have images to analyze OR if scanAllPages is enabled
-        const hasImages = pdfResult && pdfResult.images && pdfResult.images.length > 0;
-        return !!pdfResult && (hasImages || scanAllPages);
-      }
-      if (stepIndex === 3) return !!analysisResult;
-    } else {
-      // For future steps, keep the original logic but with image check
-      if (stepIndex === 1) return !!selectedFile;
-      if (stepIndex === 2) {
-        // Make Analyze step accessible if we have images to analyze OR if scanAllPages is enabled
-        const hasImages = pdfResult && pdfResult.images && pdfResult.images.length > 0;
-        return !!pdfResult && (hasImages || scanAllPages);
-      }
-      if (stepIndex === 3) return !!analysisResult;
+    if (stepIndex === 1) return !!selectedFile;
+    if (stepIndex === 2) {
+      // Step 2 is reachable as soon as extraction is done. Without an API key
+      // we still let the user click in and see an explanatory "Skipped" card
+      // that tells them how to enable AI image analysis — previously the dot
+      // just went grey with no indication a step had been skipped.
+      if (!pdfResult) return false;
+      const hasImages = pdfResult.images && pdfResult.images.length > 0;
+      return hasImages || scanAllPages || !apiKeySet;
     }
-    
+    if (stepIndex === 3) return !!analysisResult;
+
     return false;
   }
-  
+
   // Get tooltip message for inaccessible steps
   const getStepTooltip = (stepIndex) => {
     if (isStepAccessible(stepIndex)) return '';
-    
-    // API key check takes precedence
-    if (stepIndex > 0 && !apiKeySet) return 'Please add a valid OpenAI API key in the Settings section';
-    
+
     if (stepIndex === 1) return 'Please upload a PDF file first';
-    
+
     if (stepIndex === 2) {
+      if (!apiKeySet) {
+        return 'No API key configured — image analysis is skipped. The extracted text layer is still available in Results. Add a key in Settings to enable AI image analysis.';
+      }
       if (pdfResult && (!pdfResult.images || pdfResult.images.length === 0)) {
         if (scanAllPages) {
-          // If scanAllPages is enabled, the problem must be something else
           return 'Please complete the image extraction process first';
         }
         return 'No images found in the PDF - this step is skipped';
       }
       return 'Please complete the image extraction process first';
     }
-    
+
     if (stepIndex === 3) return 'Please complete the image analysis process first';
-    
+
     return '';
   }
   
@@ -726,9 +768,42 @@ function App() {
             borderRadius: { xs: 0, sm: 2 },
           }}
         >
-          <Typography variant="h4" component="h1" gutterBottom align="center">
-            AI PDF to Text Converter
-          </Typography>
+          <Box
+            sx={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              mb: 1,
+            }}
+          >
+            <Typography variant="h4" component="h1" align="center" sx={{ m: 0 }}>
+              AI PDF to Text Converter
+            </Typography>
+            {/* Global "Start over" — visible from any step the moment there's
+                state worth wiping. Avoids forcing the user to walk to Results
+                to discard a wrong upload. */}
+            {(selectedFile || pdfResult || analysisResult) && (
+              <Tooltip title="Discard the current PDF and results, then return to the upload step.">
+                <Button
+                  size="small"
+                  onClick={handleReset}
+                  startIcon={<RestartAltIcon />}
+                  sx={{
+                    position: { xs: 'static', sm: 'absolute' },
+                    right: 0,
+                    top: '50%',
+                    transform: { xs: 'none', sm: 'translateY(-50%)' },
+                    mt: { xs: 1, sm: 0 },
+                    color: 'text.secondary',
+                    '&:hover': { color: 'primary.main' },
+                  }}
+                >
+                  Start over
+                </Button>
+              </Tooltip>
+            )}
+          </Box>
           <Stepper 
             activeStep={activeStep} 
             orientation="vertical"
@@ -798,8 +873,10 @@ function App() {
                           </Box>
                         ) : isStepComplete ? (
                           <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.5 }}>
-                            {/* Show "Skipped: No images" for analyze step when there are no images */}
-                            {index === 2 && pdfResult && (!pdfResult.images || pdfResult.images.length === 0) ? (
+                            {/* Step 2 has multiple "skipped" reasons we want to make visible */}
+                            {index === 2 && pdfResult && !apiKeySet ? (
+                              <Typography variant="caption" color="primary.light" sx={{ opacity: 0.9 }}>Skipped — Add API key</Typography>
+                            ) : index === 2 && pdfResult && (!pdfResult.images || pdfResult.images.length === 0) ? (
                               <Typography variant="caption" color="text.primary" sx={{ opacity: 0.7 }}>Skipped: No images</Typography>
                             ) : (
                               <Typography variant="caption" color="text.primary" sx={{ opacity: 0.7 }}>Complete</Typography>

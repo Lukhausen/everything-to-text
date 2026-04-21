@@ -1,1 +1,12 @@
- 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Everything to Text">
+  <title>Everything to Text</title>
+  <!-- Document body in the app's primary orange (#ff9800) -->
+  <path d="M16 4h22l14 14v38a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6V10a6 6 0 0 1 6-6z"
+        fill="#ff9800"/>
+  <!-- Folded top-right corner, lighter orange tint -->
+  <path d="M38 4v10a4 4 0 0 0 4 4h10z" fill="#ffb74d"/>
+  <!-- Three "extracted text" lines, dark for high contrast against orange -->
+  <rect x="18" y="32" width="28" height="4" rx="2" fill="#1e1e1e"/>
+  <rect x="18" y="40" width="28" height="4" rx="2" fill="#1e1e1e"/>
+  <rect x="18" y="48" width="18" height="4" rx="2" fill="#1e1e1e"/>
+</svg>

@@ -1,8 +1,17 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import { groupSimilarImages } from './imageUtils';
+// Resolve the worker bundled with the installed pdfjs-dist version. Using
+// new URL(..., import.meta.url) lets Vite/Rollup fingerprint the asset and
+// keeps it automatically in sync with the installed pdfjs-dist version
+// instead of pointing to a hand-copied `public/pdf.worker.min.mjs`.
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+
+// cMaps and standard fonts must match the installed pdfjs-dist version.
+// They are copied to the build output by the `vite-plugin-copy-pdfjs-assets`
+// in `vite.config.js`, so we only need to point at the public-relative URL.
+const PDFJS_CMAP_URL = '/pdfjs/cmaps/';
+const PDFJS_STANDARD_FONT_URL = '/pdfjs/standard_fonts/';
 
 /**
  * Analyzes PDF page content to determine its characteristics
@@ -70,8 +79,7 @@ const analyzePageContent = (operatorList, textContent) => {
   // Calculate metrics
   const totalOps = operatorList.fnArray.length;
   const nonTextPercentage = (imageOps + graphicsOps) / Math.max(1, totalOps);
-  const imageToTextRatio = imageOps / Math.max(1, textOps);
-  
+
   // Set flags based on analysis
   result.hasImages = imageOps > 0;
   result.imageCount = uniqueImageNames.size > 0 ? uniqueImageNames.size : imageOps;
@@ -541,9 +549,8 @@ const removeDuplicatePlaceholders = (text) => {
  */
 async function renderPageToImage(page, options = {}) {
   const {
-    pageNum, 
-    id, 
-    isFullPage = true,
+    pageNum,
+    id,
     isScanned = false,
     isForcedScan = false
   } = options;
@@ -644,15 +651,10 @@ async function renderPageToImage(page, options = {}) {
  */
 async function processPdfDocument(pdfData, options = {}) {
   // Extract options with clear names and defaults
-  const { 
+  const {
     progressCallback = null,
     logCallback = null,
     scanAllPages = false,
-    debugMode = false,
-    extractImages = true,
-    detectPageType = true,
-    useWorker = true,
-    ...otherOptions
   } = options;
   
   // Use explicit function references for callbacks to prevent issues
@@ -688,11 +690,16 @@ async function processPdfDocument(pdfData, options = {}) {
     // Load the PDF document with robust error handling
     let pdf;
     try {
-      pdf = await pdfjsLib.getDocument({ 
+      pdf = await pdfjsLib.getDocument({
         data,
-        disableFontFace: true, // Disable font loading for better compatibility
-        cMapUrl: 'https://unpkg.com/pdfjs-dist@3.4.120/cmaps/',
+        cMapUrl: PDFJS_CMAP_URL,
         cMapPacked: true,
+        standardFontDataUrl: PDFJS_STANDARD_FONT_URL,
+        // Hardening per PDF.js v5 guidance: never `eval` PDF-supplied JS, and
+        // let the worker fetch resources directly so the main thread stays
+        // free.
+        isEvalSupported: false,
+        useWorkerFetch: true,
       }).promise;
     } catch (loadError) {
       console.error('Error loading PDF document:', loadError);
@@ -958,9 +965,17 @@ async function processPdfDocument(pdfData, options = {}) {
     result.originalImageCount = allExtractedImages.length;
     onLog(`Found ${allExtractedImages.length} original images before deduplication`);
     
-    // STEP 3: Group similar images
-    onLog('Analyzing image similarity...');
-    const uniqueImages = await groupSimilarImagesRevised(allExtractedImages, SCAN_ALL_PAGES);
+    // STEP 3: Pass through extracted images unchanged. Forced scans must
+    // stay distinct, and downstream text replacement expects the original
+    // per-image IDs to match the per-page placeholder map (`pageImageRef`).
+    // Cross-image deduplication (sharing one OpenAI call across identical
+    // logos/figures) is performed in `processBatchImages` instead, where it
+    // can reuse a single analysis result without renaming any IDs.
+    onLog(`Collected ${allExtractedImages.length} images for analysis`);
+    const uniqueImages = allExtractedImages.map((img) => ({
+      ...img,
+      originalId: img.id,
+    }));
     
     // Store final images in result
     result.images = uniqueImages;
@@ -1058,71 +1073,7 @@ function generateTextRepresentation(pdfResult) {
   }).join('');
 }
 
-/**
- * Ensures a page scan placeholder appears exactly once in page content
- * @param {Object} pageObj - The page object to update
- * @param {Object} pageScan - The page scan object with placeholder information
- * @returns {void} - Updates pageObj.content in place
- */
-const ensurePageScanPlaceholder = (pageObj, pageScan) => {
-  if (!pageScan || !pageObj.content) return;
-  
-  // Check if the placeholder exists using a more robust approach
-  // Using a regex pattern match instead of simple string includes
-  const placeholderPattern = new RegExp('\\[PAGE_IMAGE_' + pageObj.pageNumber + '\\]', 'i');
-  const placeholderExists = placeholderPattern.test(pageObj.content.formattedText);
-  
-  // Only add the placeholder if not already present
-  if (!placeholderExists) {
-    pageObj.content.formattedText = pageScan.placeholder + 
-      (pageObj.content.formattedText ? '\n\n' + pageObj.content.formattedText : '');
-  }
-};
-
-/**
- * Revised version of groupSimilarImages that handles forced scans properly
- * This function is made explicit in pdfUtils.js to avoid dependencies on imageUtils.js
- * 
- * @param {Array} images - The images to group
- * @param {Boolean} scanAllPagesEnabled - Whether the Scan All Pages feature is enabled
- * @returns {Array} Grouped images with forced scans preserved
- */
-async function groupSimilarImagesRevised(images, scanAllPagesEnabled) {
-  // Skip processing if no images
-  if (!images || images.length === 0) {
-    console.log('No images to group');
-    return [];
-  }
-  
-  try {
-    console.log(`Grouping ${images.length} images, scanAllPagesEnabled=${scanAllPagesEnabled}`);
-    
-    // Step 1: Separate forced scans from regular images
-    // Identification is explicit using the isForcedScan flag
-    const forcedScans = images.filter(img => !!img.isForcedScan);
-    const regularImages = images.filter(img => !img.isForcedScan);
-    
-    console.log(`Identified ${forcedScans.length} forced scans and ${regularImages.length} regular images`);
-    
-    // Step 2: Process regular images (no sophisticated grouping in this simplified version)
-    // In a real implementation, you'd want to restore the proper grouping logic
-    
-    // Step 3: Combine results, with forced scans first
-    const result = [...forcedScans, ...regularImages];
-    
-    // Add mapping info to make page reference updating work
-    result.forEach(img => {
-      img.originalId = img.id; // For consistency with the original function
-    });
-    
-    return result;
-  } catch (error) {
-    console.error(`Error grouping images: ${error.message}`);
-    return images; // On error, return original list
-  }
-}
-
 export {
   processPdfDocument,
   generateTextRepresentation
-}; 
+};

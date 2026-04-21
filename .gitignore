@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Auto-copied by vite-plugin-copy-pdfjs-assets at build time.
+public/pdfjs/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -19,33 +19,40 @@ import {
 } from '@mui/icons-material'
 import Settings from './Settings'
 
-const FileUpload = ({ onFileSelect, onDebugModeChange, onAutoProgressChange, onSettingsChange, hasNavigatedAway }) => {
-  const [file, setFile] = useState(null)
+// Controlled component: the parent (`App`) owns the currently-selected file
+// via the `selectedFile` prop. Removing the local `file` state fixes the
+// reset bug where clicking "Process Another PDF" left the old filename and
+// delete icon visible because nothing told FileUpload to clear itself.
+const FileUpload = ({
+  onFileSelect,
+  onDebugModeChange,
+  onAutoProgressChange,
+  onSettingsChange,
+  hasNavigatedAway,
+  selectedFile = null,
+}) => {
   const [error, setError] = useState(null)
-  const [dragActive, setDragActive] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
-  
-  // Effect to collapse advanced settings when navigating away
+  const file = selectedFile
+
   useEffect(() => {
     if (hasNavigatedAway) {
       setShowAdvanced(false)
     }
   }, [hasNavigatedAway])
-  
-  // Effect to collapse settings when component mounts
+
   useEffect(() => {
     setShowAdvanced(false)
   }, [])
 
   const onDrop = useCallback((acceptedFiles) => {
-    const selectedFile = acceptedFiles[0]
-    if (selectedFile?.type !== 'application/pdf') {
+    const dropped = acceptedFiles[0]
+    if (dropped?.type !== 'application/pdf') {
       setError('Please upload a PDF file only')
       return
     }
-    setFile(selectedFile)
     setError(null)
-    onFileSelect?.(selectedFile)
+    onFileSelect?.(dropped)
   }, [onFileSelect])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -57,7 +64,6 @@ const FileUpload = ({ onFileSelect, onDebugModeChange, onAutoProgressChange, onS
   })
 
   const handleDelete = () => {
-    setFile(null)
     onFileSelect?.(null)
   }
 

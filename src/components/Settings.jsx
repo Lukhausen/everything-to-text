@@ -75,8 +75,8 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(STORAGE_KEYS.API_KEY) || '')
   const [showApiKey, setShowApiKey] = useState(false)
   const [model, setModel] = useState(() => localStorage.getItem(STORAGE_KEYS.MODEL) || 'gpt-4o-mini')
-  const [maxConcurrentRequests, setMaxConcurrentRequests] = useState(() => 
-    safeParseInt(localStorage.getItem(STORAGE_KEYS.MAX_REQUESTS), 100)
+  const [maxConcurrentRequests, setMaxConcurrentRequests] = useState(() =>
+    safeParseInt(localStorage.getItem(STORAGE_KEYS.MAX_REQUESTS), 5)
   )
   const [maxRefusalRetries, setMaxRefusalRetries] = useState(() => 
     safeParseInt(localStorage.getItem(STORAGE_KEYS.MAX_REFUSAL_RETRIES), 3)
@@ -146,9 +146,13 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
     }
   }, [debugMode, onDebugModeChange])
 
-  // Save API key validation status to localStorage
+  // Save API key validation status to localStorage and notify any listeners
+  // in this same tab (App.jsx subscribes to this via the
+  // `pdf_processor_settings_changed` event so it can re-check immediately
+  // without polling).
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.API_KEY_VALIDATED, isKeyValidated.toString())
+    window.dispatchEvent(new CustomEvent('pdf_processor_settings_changed'))
   }, [isKeyValidated])
 
   // Save auto progress setting to localStorage
@@ -241,10 +245,12 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
     }
   }
   
-  // Update original API key ref when saving to localStorage
+  // Update original API key ref when saving to localStorage and notify
+  // listeners in the same tab.
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.API_KEY, apiKey)
     originalApiKeyRef.current = apiKey
+    window.dispatchEvent(new CustomEvent('pdf_processor_settings_changed'))
   }, [apiKey])
 
   // Track initial mount for debugging
@@ -410,11 +416,14 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
                 }
               }}
             >
-              <MenuItem value="gpt-4o-mini">GPT-4o Mini (Faster, Less Costly)</MenuItem>
-              <MenuItem value="gpt-4o">GPT-4o (Higher Quality Analysis)</MenuItem>
+              <MenuItem value="gpt-5.4">GPT-5.4 — Current Flagship [$2.50 in / $15.00 out per 1M tokens]</MenuItem>
+              <MenuItem value="gpt-4o">GPT-4o — Legacy Flagship [$2.50 in / $10.00 out per 1M tokens]</MenuItem>
+              <MenuItem value="gpt-4o-mini">GPT-4o Mini — Balanced (Recommended) [$0.15 in / $0.60 out per 1M tokens]</MenuItem>
+              <MenuItem value="gpt-4.1-nano">GPT-4.1 Nano — Cheapest [$0.10 in / $0.40 out per 1M tokens]</MenuItem>
             </Select>
             <FormHelperText>
-              Mini is recommended for most documents. Use full GPT-4o for complex images.
+              Bracketed prices are USD per 1M tokens (input / output). Mini is recommended for
+              most documents; pick a flagship for complex visual reasoning, or Nano for high‑volume runs.
             </FormHelperText>
           </FormControl>
 
@@ -425,14 +434,15 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
             <Slider
               value={maxConcurrentRequests}
               onChange={(_, value) => setMaxConcurrentRequests(value)}
-              min={0}
-              max={1000}
-              step={10}
+              min={1}
+              max={50}
+              step={1}
               marks={[
-                { value: 0, label: '0' },
-                { value: 100, label: '100' },
-                { value: 500, label: '500' },
-                { value: 1000, label: '1000' },
+                { value: 1, label: '1' },
+                { value: 5, label: '5' },
+                { value: 10, label: '10' },
+                { value: 25, label: '25' },
+                { value: 50, label: '50' },
               ]}
               valueLabelDisplay="auto"
               sx={{
@@ -449,6 +459,11 @@ export default function Settings({ onDebugModeChange, onAutoProgressChange, onSe
                 }
               }}
             />
+            <FormHelperText>
+              Higher values process faster but risk hitting OpenAI rate limits
+              (HTTP 429). Tier-1 vision accounts usually allow ~5 concurrent
+              requests; raise it if you have a higher tier.
+            </FormHelperText>
           </Box>
           
           <FormControl component="fieldset" variant="standard">

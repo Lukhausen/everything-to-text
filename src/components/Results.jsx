@@ -5,8 +5,6 @@ import {
   Paper,
   Stack,
   TextField,
-  Switch,
-  FormControlLabel,
   Button,
   Collapse,
   Divider,
@@ -17,22 +15,18 @@ import {
   ButtonGroup,
   Chip,
   Grid,
-  Badge,
   Slider,
 } from '@mui/material'
 import {
   ContentCopy as ContentCopyIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
-  Check as CheckIcon,
   Download as DownloadIcon,
   DataObject as DataObjectIcon,
   FormatIndentIncrease as FormatIcon,
   TextSnippet as TextIcon,
   Description as DocumentIcon,
   Image as ImageIcon,
-  CheckCircle as CheckCircleIcon,
-  ZoomIn as ZoomInIcon,
 } from '@mui/icons-material'
 import { createTextReplacement, generateFormattedText } from '../utils/textReplacementUtils'
 import ImageDetailModal from './ImageDetailModal'
@@ -43,42 +37,57 @@ const escapeRegExp = (string) => {
 };
 
 // Text normalization utilities
-const normalizeText = (text, context = 'display') => {
+//
+// `_context` is intentionally accepted (and unused today) so call sites can
+// keep tagging the call as 'copy' / 'download' / 'display'. If a future
+// caller needs context-specific normalisation, expand it here.
+const normalizeText = (text, _context = 'display') => {
   if (!text) return '';
   // Trim leading/trailing whitespace and newlines
   return text.replace(/^[\s\n]+|[\s\n]+$/g, '');
 };
 
 // Default format settings
+//
+// Markers are XML-style tags with a self-documenting `page_number` attribute
+// (`<page page_number="2">…</page>`) so the output is unambiguous and easy
+// for downstream LLMs to parse without prior knowledge of the schema.
 const DEFAULT_FORMAT_SETTINGS = {
-  pageIndicators: {
-    includePageHeadings: true,
-    pageHeadingFormat: '//PAGE {pageNumber}:',
-  },
   contentTypes: {
     pageHeading: {
-      prefix: '#PAGE_{pageNumber}_START#',
-      suffix: '#PAGE_{pageNumber}_END#'
+      prefix: '<page page_number="{pageNumber}">',
+      suffix: '</page>'
     },
     pageScan: {
-      prefix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_START#',
-      suffix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_END#'
+      prefix: '<page_scan page_number="{pageNumber}">',
+      suffix: '</page_scan>'
     },
     image: {
-      prefix: '#IMAGE_CONTENT_PAGE_{pageNumber}_START#',
-      suffix: '#IMAGE_CONTENT_PAGE_{pageNumber}_END#'
+      prefix: '<image page_number="{pageNumber}">',
+      suffix: '</image>'
     },
     text: {
-      prefix: '#TEXT_CONTENT_PAGE_{pageNumber}_START#',
-      suffix: '#TEXT_CONTENT_PAGE_{pageNumber}_END#'
+      prefix: '<text page_number="{pageNumber}">',
+      suffix: '</text>'
     }
   },
   spacing: {
-    betweenPages: 3,            // Spacing between pages
-    markerToContent: 2,         // Spacing between a marker and its content
-    betweenContentSections: 3    // Spacing between different content sections on the same page
+    betweenPages: 2,            // 1 blank line between pages
+    markerToContent: 1,         // No blank line between a tag and its content
+    betweenContentSections: 2   // 1 blank line between content blocks on the same page
   }
 };
+
+// Bumped whenever the marker shape or default spacing changes so previously-
+// saved user preferences are silently replaced by the new defaults instead of
+// rendering stale formatting forever.
+const FORMAT_SETTINGS_STORAGE_KEY = 'textFormatSettings_v5';
+const LEGACY_FORMAT_SETTINGS_STORAGE_KEYS = [
+  'textFormatSettings',
+  'textFormatSettings_v2',
+  'textFormatSettings_v3',
+  'textFormatSettings_v4',
+];
 
 // Helper function to format a slider label with the current value
 const formatSliderLabel = (label, value) => `${label} (${value})`;
@@ -107,28 +116,38 @@ export default function Results({
   // Format settings - load from localStorage if available
   const [formatSettings, setFormatSettings] = useState(() => {
     try {
-      const savedSettings = localStorage.getItem('textFormatSettings');
+      // Drop any settings saved under older marker schemas so previously
+      // upgraded users automatically get the new XML-style defaults.
+      LEGACY_FORMAT_SETTINGS_STORAGE_KEYS.forEach((key) => {
+        try { localStorage.removeItem(key); } catch (_e) { /* ignore */ }
+      });
+
+      const savedSettings = localStorage.getItem(FORMAT_SETTINGS_STORAGE_KEY);
       if (!savedSettings) return DEFAULT_FORMAT_SETTINGS;
-      
+
       let parsedSettings = JSON.parse(savedSettings);
-      
-      // Clear localStorage if the format has changed to prevent errors
-      if (parsedSettings && typeof parsedSettings === 'object' && !parsedSettings.pageIndicators) {
+
+      // Defensive: any malformed payload falls back to defaults instead of
+      // half-rendering broken markers.
+      if (!parsedSettings || typeof parsedSettings !== 'object' || !parsedSettings.contentTypes) {
         console.log('Clearing old format settings from localStorage');
-        localStorage.removeItem('textFormatSettings');
+        localStorage.removeItem(FORMAT_SETTINGS_STORAGE_KEY);
         return DEFAULT_FORMAT_SETTINGS;
       }
-      
+
       // Ensure all required sections exist
-      if (!parsedSettings.pageIndicators) parsedSettings.pageIndicators = DEFAULT_FORMAT_SETTINGS.pageIndicators;
       if (!parsedSettings.contentTypes) parsedSettings.contentTypes = DEFAULT_FORMAT_SETTINGS.contentTypes;
       if (!parsedSettings.spacing) parsedSettings.spacing = DEFAULT_FORMAT_SETTINGS.spacing;
-      
+
+      // Strip any legacy fields that no longer exist in the schema so they
+      // can't reappear in saved-state round trips.
+      if (parsedSettings.pageIndicators) delete parsedSettings.pageIndicators;
+
       return parsedSettings;
     } catch (error) {
       console.error('Error loading format settings from localStorage:', error);
       // Clear potentially corrupted settings
-      localStorage.removeItem('textFormatSettings');
+      localStorage.removeItem(FORMAT_SETTINGS_STORAGE_KEY);
       return DEFAULT_FORMAT_SETTINGS;
     }
   });
@@ -136,7 +155,7 @@ export default function Results({
   // Save settings to localStorage when they change
   useEffect(() => {
     try {
-      localStorage.setItem('textFormatSettings', JSON.stringify(formatSettings));
+      localStorage.setItem(FORMAT_SETTINGS_STORAGE_KEY, JSON.stringify(formatSettings));
     } catch (error) {
       console.error('Error saving format settings to localStorage:', error);
     }
@@ -307,29 +326,25 @@ export default function Results({
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
     
-    // Helper function to escape regex special characters in marker patterns
+    // Helper that turns a marker template (e.g. `<page n="{pageNumber}">`)
+    // into a regex that matches the HTML-escaped form of that marker (because
+    // we run this AFTER HTML-escaping the text for safe rendering).
     const escapeRegexSpecialChars = (str) => {
       if (!str) return '';
-      
-      // First escape all regex special characters
-      let escaped = str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
-      // Then replace {pageNumber} with the pattern for digits
-      // Using a more specific replacement to avoid issues with partial matches
-      escaped = escaped.replace(/\\\{pageNumber\\\}/g, '\\d+');
-      
-      // Add word boundary assertions for more precise matching
-      // This helps with partial matches like "PAGE" vs "PAGE_"
-      if (escaped.includes('PAGE') || escaped.includes('SCAN') || 
-          escaped.includes('IMAGE') || escaped.includes('TEXT')) {
-        // Make sure we're precisely matching these keywords
-        escaped = escaped
-          .replace(/PAGE/g, '(?:PAGE)')
-          .replace(/SCAN/g, '(?:SCAN)')
-          .replace(/IMAGE/g, '(?:IMAGE)')
-          .replace(/TEXT/g, '(?:TEXT)');
-      }
-      
+
+      // 1) HTML-escape the marker the same way we escape the text body.
+      const htmlEscaped = str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+      // 2) Regex-escape, then turn the {pageNumber} sentinel into \d+.
+      const escaped = htmlEscaped
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\\\{pageNumber\\\}/g, '\\d+');
+
       return escaped;
     };
     
@@ -387,22 +402,42 @@ export default function Results({
       .replace(new RegExp(`(${textContentPrefix})`, 'g'), '<span class="marker text-marker start-marker">$1</span>')
       .replace(new RegExp(`(${textContentSuffix})`, 'g'), '<span class="marker text-marker end-marker">$1</span>');
     
-    // Handle any exact patterns that might have been missed by the dynamic approach
-    // This ensures backward compatibility with any hardcoded markers
+    // Belt-and-braces fallback for anything the dynamic regexes above might
+    // miss — primarily defends against custom user marker overrides that
+    // happen to share the canonical XML shape, plus the legacy `#…#`
+    // markers from older saved sessions.
+    //
+    // NB: these patterns operate on text that has already been HTML-escaped,
+    // so `<page page_number="2">` looks like
+    // `&lt;page page_number=&quot;2&quot;&gt;`.
     formattedDisplayText = formattedDisplayText
-      // Page markers (fallback for any that weren't caught by the dynamic regex)
+      // Current XML-style page markers
+      .replace(/(&lt;page page_number=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker page-heading-marker start-marker">$1</span>')
+      .replace(/(&lt;\/page&gt;)(?!<\/span>)/g, '<span class="marker page-heading-marker end-marker">$1</span>')
+      // Current XML-style page scan markers
+      .replace(/(&lt;page_scan page_number=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker page-marker start-marker">$1</span>')
+      .replace(/(&lt;\/page_scan&gt;)(?!<\/span>)/g, '<span class="marker page-marker end-marker">$1</span>')
+      // Current XML-style image markers
+      .replace(/(&lt;image page_number=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker image-marker start-marker">$1</span>')
+      .replace(/(&lt;\/image&gt;)(?!<\/span>)/g, '<span class="marker image-marker end-marker">$1</span>')
+      // Current XML-style text markers
+      .replace(/(&lt;text page_number=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker text-marker start-marker">$1</span>')
+      .replace(/(&lt;\/text&gt;)(?!<\/span>)/g, '<span class="marker text-marker end-marker">$1</span>')
+      // Earlier short-attribute form (`n="2"`) kept for backwards-compat
+      .replace(/(&lt;page n=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker page-heading-marker start-marker">$1</span>')
+      .replace(/(&lt;page_scan n=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker page-marker start-marker">$1</span>')
+      .replace(/(&lt;image n=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker image-marker start-marker">$1</span>')
+      .replace(/(&lt;text n=&quot;\d+&quot;&gt;)(?!<\/span>)/g, '<span class="marker text-marker start-marker">$1</span>')
+      // Legacy `#…#` markers (still rendered nicely if any leak through)
       .replace(/(#PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker page-heading-marker start-marker">$1</span>')
       .replace(/(#PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker page-heading-marker end-marker">$1</span>')
-      // Full page scan markers (fallback)
       .replace(/(#FULL_PAGE_SCAN_PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker page-marker start-marker">$1</span>')
       .replace(/(#FULL_PAGE_SCAN_PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker page-marker end-marker">$1</span>')
-      // Image content markers (fallback)
       .replace(/(#IMAGE_CONTENT_PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker image-marker start-marker">$1</span>')
       .replace(/(#IMAGE_CONTENT_PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker image-marker end-marker">$1</span>')
-      // Text content markers (fallback)
       .replace(/(#TEXT_CONTENT_PAGE_\d+_START#)(?!<\/span>)/g, '<span class="marker text-marker start-marker">$1</span>')
       .replace(/(#TEXT_CONTENT_PAGE_\d+_END#)(?!<\/span>)/g, '<span class="marker text-marker end-marker">$1</span>');
-    
+
     return formattedDisplayText;
   };
 
@@ -462,8 +497,8 @@ export default function Results({
                   
                   // Basic syntax highlighting
                   return jsonStr
-                    .replace(/"([^"]+)":/g, '<span style="color: #9cdcfe;">\"$1\"</span>:')
-                    .replace(/: "([^"]+)"/g, ': <span style="color: #ce9178;">\"$1\"</span>')
+                    .replace(/"([^"]+)":/g, '<span style="color: #9cdcfe;">"$1"</span>:')
+                    .replace(/: "([^"]+)"/g, ': <span style="color: #ce9178;">"$1"</span>')
                     .replace(/: ([0-9]+),/g, ': <span style="color: #b5cea8;">$1</span>,')
                     .replace(/: (true|false)/g, ': <span style="color: #569cd6;">$1</span>')
                     .replace(/null/g, '<span style="color: #569cd6;">null</span>');
@@ -630,31 +665,21 @@ export default function Results({
                   
                   // Get images for this page
                   const pageImages = imagesByPage[pageNumber] || [];
-                  
-                  // Get image references for this page
-                  const imageRefs = page.imageReferences || [];
-                  
+
                   // Separate full-page scans from embedded images
                   const pageScanImages = pageImages.filter(img => img.isFullPage);
                   const embeddedImages = pageImages.filter(img => !img.isFullPage);
-                  
+
                   // Use embedded images for display if available, otherwise use all images
                   const displayImages = embeddedImages.length > 0 ? embeddedImages : pageImages;
-                  
-                  // Count analyzed images on this page
-                  const analyzedImages = displayImages.filter(img => 
-                    analyzedImagesMap[img.id] && 
-                    analyzedImagesMap[img.id].success &&
-                    !analyzedImagesMap[img.id].refusalDetected
-                  );
-                  
+
                   // Get page text content
                   const pageContent = page.content || {};
                   const pageText = pageContent.formattedText || pageContent.rawText || '';
                   const hasText = pageText && pageText.trim().length > 0;
                   
                   return (
-                    <Grid item xs={12} sm={6} md={4} lg={3} key={pageNumber}>
+                    <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }} key={pageNumber}>
                       <Paper
                         sx={{
                           height: '280px',
@@ -790,7 +815,7 @@ export default function Results({
                                     }
                                     
                                     // Create HTML for the image with text below
-                                    const createImageWithText = (width, height) => {
+                                    const createImageWithText = () => {
                                       // Check if text is available
                                       const hasText = imageText && imageText.trim().length > 0;
                                       
@@ -831,11 +856,11 @@ export default function Results({
                                     // Replace placeholders with image elements
                                     if (img.isFullPage && content.includes(pageScanPlaceholder)) {
                                       const regex = new RegExp(escapeRegExp(pageScanPlaceholder), 'g');
-                                      const imgHtml = createImageWithText(54, 54);
+                                      const imgHtml = createImageWithText();
                                       content = content.replace(regex, imgHtml);
                                     } else if (content.includes(placeholder)) {
                                       const regex = new RegExp(escapeRegExp(placeholder), 'g');
-                                      const imgHtml = createImageWithText(40, 40);
+                                      const imgHtml = createImageWithText();
                                       content = content.replace(regex, imgHtml);
                                     }
                                   });
@@ -962,6 +987,55 @@ export default function Results({
           </ButtonGroup>
         </Box>
 
+        {/* Run metadata strip — tells the user (and helps compare runs) what
+            settings produced this output: model, scan-all flag, image count,
+            and any "skipped" reason. Shown unconditionally so users can see
+            at a glance why analysis was/wasn't performed. */}
+        {(() => {
+          const skipped = analysisResult?.analysisSkipped === true;
+          const skippedReason = analysisResult?.analysisSkippedReason;
+          const model = !skipped
+            ? (localStorage.getItem('pdf_processor_model') || 'gpt-4o-mini')
+            : null;
+          const scanAll = localStorage.getItem('scanAllPages') === 'true';
+          const imageCount = pdfResult?.images?.length ?? 0;
+          const analyzedCount = analysisResult?.imageAnalysisResults?.length ?? 0;
+          return (
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
+              {skipped ? (
+                <Chip
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  label={
+                    skippedReason === 'no_api_key'
+                      ? 'AI analysis skipped: no API key'
+                      : skippedReason === 'no_images'
+                        ? 'AI analysis skipped: no images'
+                        : 'AI analysis skipped'
+                  }
+                />
+              ) : (
+                <Chip size="small" variant="outlined" label={`Model: ${model}`} />
+              )}
+              <Chip
+                size="small"
+                variant="outlined"
+                label={`Scan all pages: ${scanAll ? 'on' : 'off'}`}
+              />
+              <Chip
+                size="small"
+                variant="outlined"
+                label={
+                  skipped
+                    ? `${imageCount} image(s) found`
+                    : `${analyzedCount} / ${imageCount} image(s) analyzed`
+                }
+              />
+            </Box>
+          );
+        })()}
+
         <Divider sx={{ my: 1 }} />
         
         <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 1 }}>
@@ -1022,51 +1096,27 @@ export default function Results({
                 </Button>
               </Box>
               
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formatSettings?.pageIndicators?.includePageHeadings ?? DEFAULT_FORMAT_SETTINGS.pageIndicators.includePageHeadings}
-                    onChange={(e) => handleFormatChange('pageIndicators.includePageHeadings', e.target.checked)}
-                    color="primary"
-                    size="small"
-                  />
-                }
-                label={<Typography variant="body2">Include page headings</Typography>}
-              />
-              
-              {(formatSettings?.pageIndicators?.includePageHeadings ?? DEFAULT_FORMAT_SETTINGS.pageIndicators.includePageHeadings) && (
-                <>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label="Page Heading Format"
-                    value={formatSettings?.pageIndicators?.pageHeadingFormat ?? DEFAULT_FORMAT_SETTINGS.pageIndicators.pageHeadingFormat}
-                    onChange={(e) => handleFormatChange('pageIndicators.pageHeadingFormat', e.target.value)}
-                    helperText="Use {pageNumber} for page numbers and \n for line breaks"
-                    margin="dense"
-                  />
-                  
-                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 0.5 }}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="Page Heading Prefix Marker"
-                      value={formatSettings?.contentTypes?.pageHeading?.prefix ?? DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.prefix}
-                      onChange={(e) => handleFormatChange('contentTypes.pageHeading.prefix', e.target.value)}
-                      margin="dense"
-                    />
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="Page Heading Suffix Marker"
-                      value={formatSettings?.contentTypes?.pageHeading?.suffix ?? DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.suffix}
-                      onChange={(e) => handleFormatChange('contentTypes.pageHeading.suffix', e.target.value)}
-                      margin="dense"
-                    />
-                  </Stack>
-                </>
-              )}
-              
+              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>Page Wrapper Markers</Typography>
+
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 0.5 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Page Heading Prefix Marker"
+                  value={formatSettings?.contentTypes?.pageHeading?.prefix ?? DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.prefix}
+                  onChange={(e) => handleFormatChange('contentTypes.pageHeading.prefix', e.target.value)}
+                  margin="dense"
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Page Heading Suffix Marker"
+                  value={formatSettings?.contentTypes?.pageHeading?.suffix ?? DEFAULT_FORMAT_SETTINGS.contentTypes.pageHeading.suffix}
+                  onChange={(e) => handleFormatChange('contentTypes.pageHeading.suffix', e.target.value)}
+                  margin="dense"
+                />
+              </Stack>
+
             <Divider sx={{ my: 1 }} />
               
             <Typography variant="body2" sx={{ fontWeight: 'medium' }}>Page Content Formatting</Typography>

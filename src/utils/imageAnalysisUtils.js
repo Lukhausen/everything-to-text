@@ -7,6 +7,14 @@ const STORAGE_KEYS = {
   MAX_REFUSAL_RETRIES: 'pdf_processor_max_refusal_retries'
 };
 
+// Default prompts used when localStorage is empty / cleared
+const DEFAULT_GENERAL_PROMPT =
+  "Describe this image in detail. Transcribe any visible text and explain what is shown, " +
+  "focusing on the meaning and information it conveys.";
+const DEFAULT_PAGE_SCAN_PROMPT =
+  "This is an image of a page from a PDF document. Extract ALL the visual information. " +
+  "First, extract and describe all the visible graphics, then transcribe all the text on the document.";
+
 /**
  * Analyzes an image using OpenAI's vision capabilities with automatic retries
  * and refusal detection
@@ -33,10 +41,8 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
     maxTokens = 1000,
     retryCount = 2,
     analysisType = 'general',
-    isForcedScan = false, // Flag to indicate if this is a forced page scan
     // Use maxRefusalRetries from options only as fallback if localStorage value isn't available
     maxRefusalRetries = defaultMaxRefusalRetries,
-    // ... other existing options
   } = options;
 
   // Log maxRefusalRetries source for debugging
@@ -68,42 +74,35 @@ export async function analyzeImage(base64Image, apiKey, options = {}) {
   // Function to perform basic image analysis without refusal checking
   const performBasicAnalysis = async () => {
     try {
-      // Determine prompt based ONLY on analysis type
-      let prompt;
-      
-      // Check for custom prompts in localStorage first
       const customGeneralPrompt = localStorage.getItem('pdf_processor_general_image_prompt');
       const customPageScanPrompt = localStorage.getItem('pdf_processor_page_scan_prompt');
-      
-      // Use custom prompts if available, otherwise use defaults
+
+      let prompt;
       switch (analysisType) {
         case 'page_description':
-          prompt = customPageScanPrompt || 
-            "This is an image of a page from a PDF document. Make sure to extract ALL the visual information. First, extract and describe all the visible graphics, then transcribe all the text on the document.";
+          prompt = (customPageScanPrompt && customPageScanPrompt.trim()) || DEFAULT_PAGE_SCAN_PROMPT;
           break;
         case 'general':
         default:
-          // Default to general image analysis if an unknown type is provided
-          prompt = customGeneralPrompt }
-      
-      // Make API request to OpenAI with preset prompt
+          prompt = (customGeneralPrompt && customGeneralPrompt.trim()) || DEFAULT_GENERAL_PROMPT;
+          break;
+      }
+
       const response = await openai.chat.completions.create({
         model: model,
         messages: [
-          { 
-            role: "user", 
+          {
+            role: "user",
             content: [
               { type: "text", text: prompt },
-              { 
-                type: "image_url", 
-                image_url: {
-                  url: dataURI
-                }
+              {
+                type: "image_url",
+                image_url: { url: dataURI }
               }
             ]
           }
         ],
-        max_tokens: maxTokens,
+        max_completion_tokens: maxTokens,
         temperature: temperature
       });
 

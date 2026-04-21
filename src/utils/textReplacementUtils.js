@@ -8,52 +8,43 @@ const escapeRegExp = (string) => {
 };
 
 // Default replacement format settings
+//
+// Markers are emitted as XML-style tags with self-documenting attribute names
+// so the resulting text is unambiguous for downstream LLM consumers and
+// trivial to parse. Each block is a matching
+// `<tag page_number="N">` … `</tag>` pair where N is the 1-based page number.
 const DEFAULT_CONFIG = {
-  // Page indicators and formatting
-  pageIndicators: {
-  includePageHeadings: true,
-    pageHeadingFormat: '//PAGE {pageNumber}:',
-  },
-  
   // Content types with markers
   contentTypes: {
-    // Page heading markers (new)
+    // Wraps the entire page (text + image blocks).
     pageHeading: {
-      prefix: '#PAGE_{pageNumber}_START#',
-      suffix: '#PAGE_{pageNumber}_END#'
+      prefix: '<page page_number="{pageNumber}">',
+      suffix: '</page>'
     },
-  // Full page scan replacement format
-  pageScan: {
-      prefix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_START#',
-      suffix: '#FULL_PAGE_SCAN_PAGE_{pageNumber}_END#'
-  },
-  // Regular image replacement format
-  image: {
-      prefix: '#IMAGE_CONTENT_PAGE_{pageNumber}_START#',
-      suffix: '#IMAGE_CONTENT_PAGE_{pageNumber}_END#'
+    // Full-page rasterized scan analyzed by the vision model.
+    pageScan: {
+      prefix: '<page_scan page_number="{pageNumber}">',
+      suffix: '</page_scan>'
     },
-    // Text content format
+    // A single embedded image analyzed by the vision model.
+    image: {
+      prefix: '<image page_number="{pageNumber}">',
+      suffix: '</image>'
+    },
+    // Plain text extracted from the PDF text layer.
     text: {
-      prefix: '#TEXT_CONTENT_PAGE_{pageNumber}_START#',
-      suffix: '#TEXT_CONTENT_PAGE_{pageNumber}_END#'
+      prefix: '<text page_number="{pageNumber}">',
+      suffix: '</text>'
     }
   },
   
-  // Simplified spacing configuration
+  // Simplified spacing configuration. Counts are *newline* characters, so
+  // value 1 = a line break with no blank line, value 2 = one blank line, etc.
   spacing: {
-    betweenPages: 3,            // Spacing between pages
-    markerToContent: 2,         // Spacing between a marker and its content
-    betweenContentSections: 3    // Spacing between different content sections on the same page
+    betweenPages: 2,            // 1 blank line between pages
+    markerToContent: 1,         // No blank line between a tag and its content
+    betweenContentSections: 2   // 1 blank line between content blocks on the same page
   }
-};
-
-/**
- * Helper function to process escape sequences in strings
- * @param {string} text - The text to process
- * @returns {string} Processed text with escape sequences converted
- */
-const processEscapeSequences = (text) => {
-  return text.replace(/\\n/g, '\n');
 };
 
 /**
@@ -82,8 +73,7 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
   }
 
   // Deep merge default config with custom config
-  const config = { 
-    pageIndicators: { ...DEFAULT_CONFIG.pageIndicators },
+  const config = {
     contentTypes: {
       pageHeading: { ...DEFAULT_CONFIG.contentTypes.pageHeading },
       pageScan: { ...DEFAULT_CONFIG.contentTypes.pageScan },
@@ -92,12 +82,7 @@ export function createTextReplacement(pdfData, batchResults, customConfig = {}) 
     },
     spacing: { ...DEFAULT_CONFIG.spacing }
   };
-  
-  // Merge custom config
-  if (customConfig.pageIndicators) {
-    Object.assign(config.pageIndicators, customConfig.pageIndicators);
-  }
-  
+
   if (customConfig.contentTypes) {
     if (customConfig.contentTypes.pageScan) {
       Object.assign(config.contentTypes.pageScan, customConfig.contentTypes.pageScan);
@@ -364,8 +349,7 @@ export function generateFormattedText(replacementResult, customConfig = {}) {
   }
   
   // Deep merge default config with custom config
-  const config = { 
-    pageIndicators: { ...DEFAULT_CONFIG.pageIndicators },
+  const config = {
     contentTypes: {
       pageHeading: { ...DEFAULT_CONFIG.contentTypes.pageHeading },
       pageScan: { ...DEFAULT_CONFIG.contentTypes.pageScan },
@@ -374,12 +358,7 @@ export function generateFormattedText(replacementResult, customConfig = {}) {
     },
     spacing: { ...DEFAULT_CONFIG.spacing }
   };
-  
-  // Merge custom config
-  if (customConfig.pageIndicators) {
-    Object.assign(config.pageIndicators, customConfig.pageIndicators);
-  }
-  
+
   if (customConfig.contentTypes) {
     if (customConfig.contentTypes.pageHeading) {
       Object.assign(config.contentTypes.pageHeading, customConfig.contentTypes.pageHeading);
@@ -394,42 +373,20 @@ export function generateFormattedText(replacementResult, customConfig = {}) {
       Object.assign(config.contentTypes.text, customConfig.contentTypes.text);
     }
   }
-  
+
   if (customConfig.spacing) {
     Object.assign(config.spacing, customConfig.spacing);
   }
-  
-  // Build the text with appropriate spacing
+
   return replacementResult.pages.map((page, index, pages) => {
-  // Define regex for replacing all occurrences of {pageNumber}
-  const pageNumberRegex = /\{pageNumber\}/g;
-  
-    // Get heading markers with page number for wrapping the entire page content
+    const pageNumberRegex = /\{pageNumber\}/g;
+
+    // Per-page wrapping markers (e.g. `<page page_number="2">` … `</page>`).
     const headingPrefix = config.contentTypes.pageHeading.prefix.replace(pageNumberRegex, page.pageNumber);
     const headingSuffix = config.contentTypes.pageHeading.suffix.replace(pageNumberRegex, page.pageNumber);
-    
-    // Build the page content including any inner headings if needed
-    let pageContent = '';
-    
-    // Only add the page heading if enabled AND page markers aren't being used
-    const usePageMarkers = headingPrefix && 
-                          headingPrefix.trim() !== '' && 
-                          headingPrefix !== '#PAGE_{pageNumber}_START#';
-    const includeInnerHeading = config.pageIndicators.includePageHeadings && !usePageMarkers;
-    
-    if (includeInnerHeading) {
-      // Add spacing before the inner heading
-      pageContent += createSpacing(config.spacing.betweenContentSections);
-      
-      // Add the heading with page number
-      pageContent += config.pageIndicators.pageHeadingFormat.replace(pageNumberRegex, page.pageNumber);
-      
-      // Add spacing after heading
-      pageContent += createSpacing(config.spacing.betweenContentSections);
-    }
-    
-    // Add the main page content
-    pageContent += page.content;
+
+    // The page body is just the rendered content blocks.
+    const pageContent = page.content;
     
     // Final result with proper wrapping of the entire page
     let result = '';
